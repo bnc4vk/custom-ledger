@@ -123,3 +123,12 @@ export async function updateExpense(id: string, input: ExpenseInsert): Promise<E
 
   return mapExpense(data as ExpenseRow)
 }
+
+export async function deleteExpense(id: string): Promise<void> {
+  const client = requireClient()
+  const { error } = await client.from('expenses').delete().eq('id', id)
+
+  if (error) {
+    throw new Error(mapSupabaseErrorMessage(error.message))
+  }
+}

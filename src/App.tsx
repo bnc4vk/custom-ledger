@@ -1,9 +1,10 @@
 import { format, isValid, parseISO } from 'date-fns'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { DayPicker } from 'react-day-picker'
 import './App.css'
 import { computeLedgerSummary } from './lib/fx'
 import { extractExpenseFromImage } from './lib/receipt'
-import { createExpense, fetchExpenses, isSupabaseConfigured, updateExpense } from './lib/supabase'
+import { createExpense, deleteExpense, fetchExpenses, isSupabaseConfigured, updateExpense } from './lib/supabase'
 import type {
   ConvertedExpense,
   Expense,
@@ -88,6 +89,16 @@ function formatExpenseDate(date: string) {
   }
 }
 
+function formatDateButtonLabel(date: string) {
+  if (!date) return 'Select date'
+  try {
+    const parsed = parseISO(date)
+    return isValid(parsed) ? format(parsed, 'MMM d, yyyy') : date
+  } catch {
+    return date
+  }
+}
+
 function parseOwedPercentInput(value: string): number | null {
   const trimmed = value.trim()
   if (!trimmed) {
@@ -128,6 +139,66 @@ function percentChipStyle(value: number) {
   }
 }
 
+function DatePickerField({
+  value,
+  onChange,
+}: {
+  value: string
+  onChange: (value: string) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const rootRef = useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    function handlePointerDown(event: MouseEvent) {
+      if (!rootRef.current) return
+      if (!rootRef.current.contains(event.target as Node)) {
+        setOpen(false)
+      }
+    }
+
+    document.addEventListener('mousedown', handlePointerDown)
+    return () => document.removeEventListener('mousedown', handlePointerDown)
+  }, [])
+
+  const selectedDate = useMemo(() => {
+    if (!value) return undefined
+    const parsed = parseISO(value)
+    return isValid(parsed) ? parsed : undefined
+  }, [value])
+
+  return (
+    <label>
+      <span>Date</span>
+      <div className="date-picker-shell" ref={rootRef}>
+        <button
+          type="button"
+          className="date-trigger"
+          aria-label="Date"
+          aria-haspopup="dialog"
+          aria-expanded={open}
+          onClick={() => setOpen((current) => !current)}
+        >
+          {formatDateButtonLabel(value)}
+        </button>
+        {open && (
+          <div className="date-popover" role="dialog" aria-label="Calendar">
+            <DayPicker
+              mode="single"
+              selected={selectedDate}
+              onSelect={(date) => {
+                if (!date) return
+                onChange(date.toISOString().slice(0, 10))
+                setOpen(false)
+              }}
+            />
+          </div>
+        )}
+      </div>
+    </label>
+  )
+}
+
 function App() {
   const [participantNames, setParticipantNames] = useState<ParticipantPair>(() => readParticipantNames())
   const [expenses, setExpenses] = useState<Expense[]>([])
@@ -144,10 +215,13 @@ function App() {
   const [editingExpenseId, setEditingExpenseId] = useState<string | null>(null)
   const [submitBusy, setSubmitBusy] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
+  const [deletingExpenseId, setDeletingExpenseId] = useState<string | null>(null)
 
   const [ocrBusy, setOcrBusy] = useState(false)
   const [ocrError, setOcrError] = useState<string | null>(null)
   const [ocrTextPreview, setOcrTextPreview] = useState<string>('')
+  const uploadInputRef = useRef<HTMLInputElement | null>(null)
+  const cameraInputRef = useRef<HTMLInputElement | null>(null)
 
   const participantOptions = participantNames
 
@@ -363,6 +437,14 @@ function App() {
     }
   }
 
+  function openUploadPicker() {
+    uploadInputRef.current?.click()
+  }
+
+  function openCameraPicker() {
+    cameraInputRef.current?.click()
+  }
+
   function beginEditExpense(expense: Expense) {
     setSubmitError(null)
     setOcrError(null)
@@ -377,6 +459,38 @@ function App() {
     setSubmitError(null)
     setForm(makeEmptyForm(participantOptions[0] ?? DEFAULT_PARTICIPANTS[0], form.currency || 'USD'))
     setFormOpen(false)
+  }
+
+  async function handleDeleteExpense(expense: Expense) {
+    if (!isSupabaseConfigured) {
+      setLoadError('Configure Supabase before deleting expenses.')
+      return
+    }
+
+    const confirmed = window.confirm(`Delete "${expense.description}"?`)
+    if (!confirmed) {
+      return
+    }
+
+    setSubmitError(null)
+    setLoadError(null)
+    setDeletingExpenseId(expense.id)
+
+    try {
+      await deleteExpense(expense.id)
+
+      if (editingExpenseId === expense.id) {
+        setEditingExpenseId(null)
+        setForm(makeEmptyForm(participantOptions[0] ?? DEFAULT_PARTICIPANTS[0], form.currency || 'USD'))
+        setFormOpen(false)
+      }
+
+      await refreshExpenses()
+    } catch (error) {
+      setLoadError(error instanceof Error ? error.message : 'Failed to delete expense')
+    } finally {
+      setDeletingExpenseId(null)
+    }
   }
 
   function finalizeParticipantName(index: number) {
@@ -449,7 +563,7 @@ function App() {
           {summaryError && <p className="status-line error">{summaryError}</p>}
         </section>
 
-        <section className="panel form-panel">
+        <section className={`panel form-panel ${formOpen || editingExpense ? 'open' : 'collapsed'}`}>
           <div className="section-head">
             <h2>{editingExpense ? 'Edit Expense' : 'Add Expense'}</h2>
             <p className="muted tiny">
@@ -471,22 +585,49 @@ function App() {
           {(formOpen || editingExpense) && (
             <>
               <div className="receipt-actions">
-                <label className="file-button secondary-button">
-                  {ocrBusy ? 'Reading receipt…' : 'Photo'}
-                  <input
-                    type="file"
-                    accept="image/*"
-                    capture="environment"
-                    disabled={ocrBusy}
-                    onChange={(event) => {
-                      const file = event.target.files?.[0]
-                      if (file) {
-                        void handleReceiptFile(file)
-                      }
-                      event.currentTarget.value = ''
-                    }}
-                  />
-                </label>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={openUploadPicker}
+                  disabled={ocrBusy}
+                >
+                  {ocrBusy ? 'Reading…' : 'Upload'}
+                </button>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={openCameraPicker}
+                  disabled={ocrBusy}
+                >
+                  Take Photo
+                </button>
+                <input
+                  ref={uploadInputRef}
+                  className="hidden-file-input"
+                  type="file"
+                  accept="image/*,application/pdf"
+                  onChange={(event) => {
+                    const file = event.target.files?.[0]
+                    if (file) {
+                      void handleReceiptFile(file)
+                    }
+                    event.currentTarget.value = ''
+                  }}
+                />
+                <input
+                  ref={cameraInputRef}
+                  className="hidden-file-input"
+                  type="file"
+                  accept="image/*"
+                  capture="environment"
+                  onChange={(event) => {
+                    const file = event.target.files?.[0]
+                    if (file) {
+                      void handleReceiptFile(file)
+                    }
+                    event.currentTarget.value = ''
+                  }}
+                />
                 {ocrError && <p className="status-line error inline">{ocrError}</p>}
               </div>
 
@@ -548,17 +689,9 @@ function App() {
                   required
                 />
               </label>
+              <DatePickerField value={form.incurredOn} onChange={(value) => updateForm('incurredOn', value)} />
               <label>
-                <span>Date</span>
-                <input
-                  type="date"
-                  value={form.incurredOn}
-                  onChange={(e) => updateForm('incurredOn', e.target.value)}
-                  required
-                />
-              </label>
-              <label>
-                <span>On behalf %</span>
+                <span>Owed share %</span>
                 <input
                   type="text"
                   inputMode="decimal"
@@ -568,7 +701,7 @@ function App() {
                 />
               </label>
             </div>
-            <p className="muted tiny percent-help">Optional. Blank defaults to 100.</p>
+            <p className="muted tiny percent-help">Custom split (Splitwise-style). Blank = 100%.</p>
 
             <label>
               <span>Notes (optional)</span>
@@ -623,9 +756,41 @@ function App() {
             return (
               <section key={participant} className="panel ledger-column">
                 <div className="column-head">
-                  <div>
-                    <h2>{participant}</h2>
-                    <p className="muted tiny">{participantExpenses.length} expense(s)</p>
+                  <div className="column-title-group">
+                    {renamingParticipantIndex === participantIndex ? (
+                      <input
+                        className="inline-name-input header"
+                        type="text"
+                        autoFocus
+                        value={participantNames[participantIndex]}
+                        onChange={(event) => {
+                          const next = [...participantNames] as ParticipantPair
+                          next[participantIndex] = event.target.value
+                          setParticipantNames(next)
+                        }}
+                        onBlur={() => finalizeParticipantName(participantIndex)}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter') {
+                            event.preventDefault()
+                            finalizeParticipantName(participantIndex)
+                          }
+                          if (event.key === 'Escape') {
+                            event.preventDefault()
+                            setRenamingParticipantIndex(null)
+                          }
+                        }}
+                      />
+                    ) : (
+                      <button
+                        type="button"
+                        className="participant-name-tile"
+                        onClick={() => setRenamingParticipantIndex(participantIndex)}
+                        aria-label={`Rename ${participant}`}
+                      >
+                        {participant}
+                      </button>
+                    )}
+                    <p className="muted tiny">{participantExpenses.length} items</p>
                   </div>
                   <strong>{formatCurrency(participantTotal, commonCurrency)}</strong>
                 </div>
@@ -659,13 +824,19 @@ function App() {
                                   {formatCurrency(converted.convertedAmount, converted.convertedCurrency)}
                                 </span>
                               )}
-                              <button
-                                type="button"
-                                className="mini-button"
-                                onClick={() => beginEditExpense(expense)}
-                              >
-                                Edit
-                              </button>
+                              <div className="row-actions">
+                                <button type="button" className="mini-button" onClick={() => beginEditExpense(expense)}>
+                                  Edit
+                                </button>
+                                <button
+                                  type="button"
+                                  className="mini-button danger"
+                                  disabled={deletingExpenseId === expense.id}
+                                  onClick={() => void handleDeleteExpense(expense)}
+                                >
+                                  {deletingExpenseId === expense.id ? 'Deleting…' : 'Delete'}
+                                </button>
+                              </div>
                             </div>
                           </div>
                         </li>
@@ -673,41 +844,6 @@ function App() {
                     })}
                   </ul>
                 )}
-
-                <div className="column-footer">
-                  {renamingParticipantIndex === participantIndex ? (
-                    <input
-                      className="inline-name-input"
-                      type="text"
-                      autoFocus
-                      value={participantNames[participantIndex]}
-                      onChange={(event) => {
-                        const next = [...participantNames] as ParticipantPair
-                        next[participantIndex] = event.target.value
-                        setParticipantNames(next)
-                      }}
-                      onBlur={() => finalizeParticipantName(participantIndex)}
-                      onKeyDown={(event) => {
-                        if (event.key === 'Enter') {
-                          event.preventDefault()
-                          finalizeParticipantName(participantIndex)
-                        }
-                        if (event.key === 'Escape') {
-                          event.preventDefault()
-                          setRenamingParticipantIndex(null)
-                        }
-                      }}
-                    />
-                  ) : (
-                    <button
-                      type="button"
-                      className="name-edit-button"
-                      onClick={() => setRenamingParticipantIndex(participantIndex)}
-                    >
-                      {participant}
-                    </button>
-                  )}
-                </div>
               </section>
             )
           })}
@@ -732,10 +868,19 @@ function App() {
                     </div>
                     <div className="expense-amounts">
                       <strong>{formatCurrency(expense.amount, expense.currency)}</strong>
-                      <span>{formatPercentChip(effectiveOwedPercent(expense.owedPercent))}</span>
-                      <button type="button" className="mini-button" onClick={() => beginEditExpense(expense)}>
-                        Edit
-                      </button>
+                      <div className="row-actions">
+                        <button type="button" className="mini-button" onClick={() => beginEditExpense(expense)}>
+                          Edit
+                        </button>
+                        <button
+                          type="button"
+                          className="mini-button danger"
+                          disabled={deletingExpenseId === expense.id}
+                          onClick={() => void handleDeleteExpense(expense)}
+                        >
+                          {deletingExpenseId === expense.id ? 'Deleting…' : 'Delete'}
+                        </button>
+                      </div>
                     </div>
                   </div>
                 </li>

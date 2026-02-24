@@ -43,3 +43,7 @@ for insert with check (true);
 drop policy if exists "Allow update expenses" on public.expenses;
 create policy "Allow update expenses" on public.expenses
 for update using (true) with check (true);
+
+drop policy if exists "Allow delete expenses" on public.expenses;
+create policy "Allow delete expenses" on public.expenses
+for delete using (true);
