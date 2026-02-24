@@ -182,10 +182,10 @@ async function editExpense(page, fromDescription, nextData) {
 }
 
 async function testPdfUpload(page) {
-  console.log('UPLOAD PDF Test_Expense.pdf')
+  console.log('UPLOAD PDF local-test-assets/Test_Expense.pdf')
   await openAddForm(page)
   const fileInput = page.locator('input[type="file"]')
-  await fileInput.setInputFiles('Test_Expense.pdf')
+  await fileInput.setInputFiles('local-test-assets/Test_Expense.pdf')
   await delay(5000)
   const errors = await collectVisibleErrors(page)
   const form = page.locator('.expense-form')
