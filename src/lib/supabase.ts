@@ -1,11 +1,14 @@
 import { createClient } from '@supabase/supabase-js'
-import type { Expense, ExpenseInsert, ExpenseRow } from '../types'
+import type { Expense, ExpenseInsert, ExpenseRow, Ledger, LedgerRow, ParticipantPair } from '../types'
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
 const supabasePublishableKey =
   import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY ?? import.meta.env.VITE_SUPABASE_ANON_KEY
 
 export const isSupabaseConfigured = Boolean(supabaseUrl && supabasePublishableKey)
+
+export const LEGACY_LEDGER_SHARE_CODE = 'ryan-ben'
+const LEGACY_LEDGER_PARTICIPANTS: ParticipantPair = ['Ryan', 'Ben']
 
 const supabase = isSupabaseConfigured
   ? createClient(supabaseUrl, supabasePublishableKey, {
@@ -16,12 +19,16 @@ const supabase = isSupabaseConfigured
   : null
 
 function mapSupabaseErrorMessage(message: string) {
+  const normalized = message.toLowerCase()
   if (
-    message.includes("'is_shared' column") ||
-    message.includes("'owed_percent' column") ||
-    message.includes('schema cache')
+    normalized.includes("'is_shared' column") ||
+    normalized.includes("'owed_percent' column") ||
+    normalized.includes("'ledger_id' column") ||
+    normalized.includes("'share_code' column") ||
+    normalized.includes('relation "ledgers" does not exist') ||
+    normalized.includes('schema cache')
   ) {
-    return 'Database schema is outdated. Rerun supabase/schema.sql in Supabase to add the latest ledger columns and update policy.'
+    return 'Database schema is outdated. Rerun supabase/schema.sql in Supabase to add the latest ledger columns, tables, and policies.'
   }
 
   return message
@@ -37,6 +44,15 @@ function requireClient() {
   return supabase
 }
 
+function mapLedger(row: LedgerRow): Ledger {
+  return {
+    id: row.id,
+    shareCode: row.share_code,
+    participants: [row.participant_a, row.participant_b],
+    createdAt: row.created_at,
+  }
+}
+
 function mapExpense(row: ExpenseRow): Expense {
   const rawOwedPercent =
     typeof row.owed_percent === 'number'
@@ -49,6 +65,7 @@ function mapExpense(row: ExpenseRow): Expense {
 
   return {
     id: row.id,
+    ledgerId: row.ledger_id,
     participant: row.participant,
     description: row.description,
     amount: typeof row.amount === 'number' ? row.amount : Number.parseFloat(row.amount),
@@ -61,11 +78,135 @@ function mapExpense(row: ExpenseRow): Expense {
   }
 }
 
-export async function fetchExpenses(): Promise<Expense[]> {
+function isDuplicateShareCodeError(message: string) {
+  const normalized = message.toLowerCase()
+  return normalized.includes('duplicate key value') && normalized.includes('ledgers_share_code_key')
+}
+
+function normalizeShareCode(shareCode: string) {
+  return shareCode
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, '-')
+    .replace(/-{2,}/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 40)
+}
+
+function generateShareCode() {
+  return crypto.randomUUID().replace(/-/g, '').slice(0, 10)
+}
+
+export async function fetchLedgerByShareCode(shareCode: string): Promise<Ledger | null> {
+  const client = requireClient()
+  const normalizedShareCode = normalizeShareCode(shareCode)
+
+  if (!normalizedShareCode) {
+    return null
+  }
+
+  const { data, error } = await client
+    .from('ledgers')
+    .select('*')
+    .eq('share_code', normalizedShareCode)
+    .maybeSingle()
+
+  if (error) {
+    throw new Error(mapSupabaseErrorMessage(error.message))
+  }
+
+  if (!data) {
+    return null
+  }
+
+  return mapLedger(data as LedgerRow)
+}
+
+export async function ensureLegacyLedger(): Promise<Ledger> {
+  const existing = await fetchLedgerByShareCode(LEGACY_LEDGER_SHARE_CODE)
+  if (existing) {
+    return existing
+  }
+
+  const client = requireClient()
+  const payload = {
+    share_code: LEGACY_LEDGER_SHARE_CODE,
+    participant_a: LEGACY_LEDGER_PARTICIPANTS[0],
+    participant_b: LEGACY_LEDGER_PARTICIPANTS[1],
+  }
+
+  const { data, error } = await client.from('ledgers').insert(payload).select('*').single()
+
+  if (error) {
+    if (isDuplicateShareCodeError(error.message)) {
+      const retry = await fetchLedgerByShareCode(LEGACY_LEDGER_SHARE_CODE)
+      if (retry) {
+        return retry
+      }
+    }
+    throw new Error(mapSupabaseErrorMessage(error.message))
+  }
+
+  return mapLedger(data as LedgerRow)
+}
+
+export async function createLedger(participants: ParticipantPair): Promise<Ledger> {
+  const client = requireClient()
+  const normalizedParticipants: ParticipantPair = [
+    participants[0].trim() || 'Participant A',
+    participants[1].trim() || 'Participant B',
+  ]
+
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const payload = {
+      share_code: generateShareCode(),
+      participant_a: normalizedParticipants[0],
+      participant_b: normalizedParticipants[1],
+    }
+
+    const { data, error } = await client.from('ledgers').insert(payload).select('*').single()
+
+    if (!error) {
+      return mapLedger(data as LedgerRow)
+    }
+
+    if (isDuplicateShareCodeError(error.message)) {
+      continue
+    }
+
+    throw new Error(mapSupabaseErrorMessage(error.message))
+  }
+
+  throw new Error('Could not generate a unique ledger link. Try again.')
+}
+
+export async function updateLedgerParticipants(ledgerId: string, participants: ParticipantPair): Promise<Ledger> {
+  const client = requireClient()
+  const payload = {
+    participant_a: participants[0].trim() || 'Participant A',
+    participant_b: participants[1].trim() || 'Participant B',
+  }
+
+  const { data, error } = await client
+    .from('ledgers')
+    .update(payload)
+    .eq('id', ledgerId)
+    .select('*')
+    .single()
+
+  if (error) {
+    throw new Error(mapSupabaseErrorMessage(error.message))
+  }
+
+  return mapLedger(data as LedgerRow)
+}
+
+export async function fetchExpenses(ledgerId: string): Promise<Expense[]> {
   const client = requireClient()
   const { data, error } = await client
     .from('expenses')
     .select('*')
+    .eq('ledger_id', ledgerId)
     .order('incurred_on', { ascending: false })
     .order('created_at', { ascending: false })
 
@@ -80,6 +221,7 @@ export async function createExpense(input: ExpenseInsert): Promise<Expense> {
   const client = requireClient()
 
   const payload = {
+    ledger_id: input.ledgerId,
     participant: input.participant,
     description: input.description.trim(),
     amount: input.amount,
@@ -100,7 +242,7 @@ export async function createExpense(input: ExpenseInsert): Promise<Expense> {
   return mapExpense(data as ExpenseRow)
 }
 
-export async function updateExpense(id: string, input: ExpenseInsert): Promise<Expense> {
+export async function updateExpense(ledgerId: string, id: string, input: ExpenseInsert): Promise<Expense> {
   const client = requireClient()
 
   const payload = {
@@ -115,7 +257,13 @@ export async function updateExpense(id: string, input: ExpenseInsert): Promise<E
     notes: input.notes?.trim() || null,
   }
 
-  const { data, error } = await client.from('expenses').update(payload).eq('id', id).select('*').single()
+  const { data, error } = await client
+    .from('expenses')
+    .update(payload)
+    .eq('id', id)
+    .eq('ledger_id', ledgerId)
+    .select('*')
+    .single()
 
   if (error) {
     throw new Error(mapSupabaseErrorMessage(error.message))
@@ -124,9 +272,9 @@ export async function updateExpense(id: string, input: ExpenseInsert): Promise<E
   return mapExpense(data as ExpenseRow)
 }
 
-export async function deleteExpense(id: string): Promise<void> {
+export async function deleteExpense(ledgerId: string, id: string): Promise<void> {
   const client = requireClient()
-  const { error } = await client.from('expenses').delete().eq('id', id)
+  const { error } = await client.from('expenses').delete().eq('id', id).eq('ledger_id', ledgerId)
 
   if (error) {
     throw new Error(mapSupabaseErrorMessage(error.message))

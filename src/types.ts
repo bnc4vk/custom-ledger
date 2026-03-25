@@ -1,7 +1,23 @@
 export type ParticipantPair = [string, string]
 
+export interface LedgerRow {
+  id: string
+  share_code: string
+  participant_a: string
+  participant_b: string
+  created_at: string
+}
+
+export interface Ledger {
+  id: string
+  shareCode: string
+  participants: ParticipantPair
+  createdAt: string
+}
+
 export interface ExpenseRow {
   id: string
+  ledger_id: string
   participant: string
   description: string
   amount: number | string
@@ -16,6 +32,7 @@ export interface ExpenseRow {
 
 export interface Expense {
   id: string
+  ledgerId: string
   participant: string
   description: string
   amount: number
@@ -28,6 +45,7 @@ export interface Expense {
 }
 
 export interface ExpenseInsert {
+  ledgerId: string
   participant: string
   description: string
   amount: number

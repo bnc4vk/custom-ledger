@@ -2,7 +2,9 @@
 
 A minimal shared-expense ledger web app (React + Vite) with:
 
-- Two participant columns (default `Ryan` and `Ben`, editable in the UI)
+- Link-based ledgers (`/custom-ledger/<share-code>`) generated on demand
+- Dedicated legacy ledger link for existing `Ryan` + `Ben` data (`/custom-ledger/ryan-ben`)
+- Two participant columns per ledger (editable in the UI)
 - Supabase-backed expense storage
 - Historical FX conversion by expense date (via Frankfurter)
 - Settlement calculation (equal split)
@@ -25,7 +27,11 @@ cp .env.example .env
 
 3. In Supabase SQL editor, run the schema in `supabase/schema.sql`.
 
-If you already created the table before the `is_shared` field was added, rerun `supabase/schema.sql` (it now includes `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`).
+If you already created the table before ledger links were added, rerun `supabase/schema.sql`. The migration is idempotent and will:
+
+- create the new `ledgers` table
+- add `expenses.ledger_id`
+- backfill existing rows into the legacy `ryan-ben` ledger (no expense loss)
 
 4. Start the app:
 
@@ -35,9 +41,20 @@ npm run dev
 
 ## Supabase table shape
 
-The app uses a single `expenses` table with these columns:
+The app now uses:
+
+1. `ledgers`
 
 - `id` (uuid)
+- `share_code` (unique text)
+- `participant_a` (text)
+- `participant_b` (text)
+- `created_at` (timestamp)
+
+2. `expenses`
+
+- `id` (uuid)
+- `ledger_id` (uuid, foreign key to `ledgers.id`)
 - `participant` (text)
 - `description` (text)
 - `amount` (numeric)
@@ -59,7 +76,7 @@ The app uses a single `expenses` table with these columns:
 ## Notes / limitations
 
 - Receipt extraction uses free OCR with heuristics (merchant/date/amount/currency parsing). It will not be perfect; review and edit before saving.
-- Participant labels are stored in browser local storage. Existing Supabase rows keep the participant name that was selected when saved.
+- Participant labels are stored per-ledger in Supabase (`ledgers.participant_a` / `participant_b`) and shared across anyone using the same link.
 - For production use, tighten Supabase Row Level Security policies.
 
 ## One-time corrections for the sample data

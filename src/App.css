@@ -93,6 +93,13 @@
   transition: transform 140ms ease, box-shadow 140ms ease, border-color 140ms ease;
 }
 
+.inline-link-button {
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
 .primary-button {
   background: var(--primary);
   color: var(--primary-ink);
@@ -124,6 +131,25 @@
   padding: 1rem;
   display: grid;
   gap: 0.8rem;
+}
+
+.landing-panel {
+  padding: 1rem;
+  display: grid;
+  gap: 0.75rem;
+}
+
+.landing-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+}
+
+.landing-panel .inline-link-button {
+  justify-content: flex-start;
+  width: fit-content;
+  max-width: 100%;
+  word-break: break-all;
 }
 
 .settlement-spotlight {

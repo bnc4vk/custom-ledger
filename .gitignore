@@ -16,6 +16,7 @@ dist-ssr
 !.env.example
 tmp-*.png
 local-test-assets/
+supabase/.temp/
 
 # Editor directories and files
 .vscode/*

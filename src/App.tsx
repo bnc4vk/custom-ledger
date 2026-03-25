@@ -4,18 +4,77 @@ import { DayPicker } from 'react-day-picker'
 import './App.css'
 import { computeLedgerSummary } from './lib/fx'
 import { extractExpenseFromImage } from './lib/receipt'
-import { createExpense, deleteExpense, fetchExpenses, isSupabaseConfigured, updateExpense } from './lib/supabase'
+import {
+  LEGACY_LEDGER_SHARE_CODE,
+  createExpense,
+  createLedger,
+  deleteExpense,
+  ensureLegacyLedger,
+  fetchExpenses,
+  fetchLedgerByShareCode,
+  isSupabaseConfigured,
+  updateExpense,
+  updateLedgerParticipants,
+} from './lib/supabase'
 import type {
   ConvertedExpense,
   Expense,
   ExpenseFormState,
   ExpenseInsert,
+  Ledger,
   LedgerSummary,
   ParticipantPair,
 } from './types'
 
-const DEFAULT_PARTICIPANTS: ParticipantPair = ['Ryan', 'Ben']
-const PARTICIPANT_STORAGE_KEY = 'custom-ledger:participants'
+const DEFAULT_PARTICIPANTS: ParticipantPair = ['Participant A', 'Participant B']
+
+function normalizeBasePath(basePath: string) {
+  if (!basePath) {
+    return '/'
+  }
+
+  let normalized = basePath.startsWith('/') ? basePath : `/${basePath}`
+  if (!normalized.endsWith('/')) {
+    normalized = `${normalized}/`
+  }
+  return normalized
+}
+
+const APP_BASE_PATH = normalizeBasePath(import.meta.env.BASE_URL ?? '/')
+
+function appHomePath() {
+  return APP_BASE_PATH
+}
+
+function appLedgerPath(shareCode: string) {
+  return `${APP_BASE_PATH}${encodeURIComponent(shareCode)}`
+}
+
+function appLedgerUrl(shareCode: string) {
+  return new URL(appLedgerPath(shareCode), window.location.origin).toString()
+}
+
+function readLedgerShareCodeFromPath(pathname: string) {
+  const baseWithoutTrailingSlash = APP_BASE_PATH === '/' ? '/' : APP_BASE_PATH.slice(0, -1)
+
+  let relativePath = ''
+  if (pathname === APP_BASE_PATH || pathname === baseWithoutTrailingSlash) {
+    relativePath = ''
+  } else if (pathname.startsWith(APP_BASE_PATH)) {
+    relativePath = pathname.slice(APP_BASE_PATH.length)
+  } else if (APP_BASE_PATH !== '/' && pathname.startsWith(`${baseWithoutTrailingSlash}/`)) {
+    relativePath = pathname.slice(baseWithoutTrailingSlash.length + 1)
+  } else {
+    relativePath = pathname.replace(/^\/+/, '')
+  }
+
+  const [segment] = relativePath.split('/').filter(Boolean)
+  return segment ? decodeURIComponent(segment) : null
+}
+
+function readCurrentShareCode() {
+  return readLedgerShareCodeFromPath(window.location.pathname)
+}
 
 function todayIso() {
   return new Date().toISOString().slice(0, 10)
@@ -47,24 +106,6 @@ function formStateFromExpense(expense: Expense): ExpenseFormState {
       : String(Math.round(expense.owedPercent * 100) / 100),
     notes: expense.notes ?? '',
   }
-}
-
-function readParticipantNames(): ParticipantPair {
-  const raw = localStorage.getItem(PARTICIPANT_STORAGE_KEY)
-  if (!raw) return DEFAULT_PARTICIPANTS
-
-  try {
-    const parsed = JSON.parse(raw) as string[]
-    if (Array.isArray(parsed) && parsed.length === 2 && parsed.every((item) => typeof item === 'string')) {
-      const first = parsed[0].trim() || DEFAULT_PARTICIPANTS[0]
-      const second = parsed[1].trim() || DEFAULT_PARTICIPANTS[1]
-      return [first, second]
-    }
-  } catch {
-    // Fall back to defaults.
-  }
-
-  return DEFAULT_PARTICIPANTS
 }
 
 function formatCurrency(value: number, currency: string) {
@@ -200,9 +241,21 @@ function DatePickerField({
 }
 
 function App() {
-  const [participantNames, setParticipantNames] = useState<ParticipantPair>(() => readParticipantNames())
+  const routeShareCode = useMemo(() => readCurrentShareCode(), [])
+  const isLandingRoute = routeShareCode == null
+
+  const [legacyLedger, setLegacyLedger] = useState<Ledger | null>(null)
+  const [landingBusy, setLandingBusy] = useState(false)
+  const [landingError, setLandingError] = useState<string | null>(null)
+  const [creatingLedger, setCreatingLedger] = useState(false)
+
+  const [activeLedger, setActiveLedger] = useState<Ledger | null>(null)
+  const [ledgerLoading, setLedgerLoading] = useState(!isLandingRoute)
+  const [ledgerError, setLedgerError] = useState<string | null>(null)
+
+  const [participantNames, setParticipantNames] = useState<ParticipantPair>(DEFAULT_PARTICIPANTS)
   const [expenses, setExpenses] = useState<Expense[]>([])
-  const [loadingExpenses, setLoadingExpenses] = useState(true)
+  const [loadingExpenses, setLoadingExpenses] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
 
   const [summary, setSummary] = useState<LedgerSummary | null>(null)
@@ -226,8 +279,108 @@ function App() {
   const participantOptions = participantNames
 
   useEffect(() => {
-    localStorage.setItem(PARTICIPANT_STORAGE_KEY, JSON.stringify(participantNames))
-  }, [participantNames])
+    if (!isLandingRoute) {
+      return
+    }
+
+    if (!isSupabaseConfigured) {
+      return
+    }
+
+    let cancelled = false
+
+    async function loadLandingData() {
+      setLandingBusy(true)
+      setLandingError(null)
+      try {
+        const ledger = await ensureLegacyLedger()
+        if (!cancelled) {
+          setLegacyLedger(ledger)
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setLandingError(error instanceof Error ? error.message : 'Failed to load legacy ledger link')
+        }
+      } finally {
+        if (!cancelled) {
+          setLandingBusy(false)
+        }
+      }
+    }
+
+    void loadLandingData()
+
+    return () => {
+      cancelled = true
+    }
+  }, [isLandingRoute])
+
+  useEffect(() => {
+    const shareCode = routeShareCode
+    if (isLandingRoute || !shareCode) {
+      return
+    }
+    const resolvedShareCode: string = shareCode
+
+    let cancelled = false
+
+    async function loadLedger() {
+      if (!isSupabaseConfigured) {
+        setLedgerLoading(false)
+        setLedgerError(
+          'Missing Supabase environment variables. Add VITE_SUPABASE_URL and VITE_SUPABASE_PUBLISHABLE_KEY to connect data storage.',
+        )
+        return
+      }
+
+      setLedgerLoading(true)
+      setLedgerError(null)
+      setLoadError(null)
+      setSummaryError(null)
+
+      try {
+        let ledger = await fetchLedgerByShareCode(resolvedShareCode)
+
+        if (!ledger && resolvedShareCode.toLowerCase() === LEGACY_LEDGER_SHARE_CODE) {
+          ledger = await ensureLegacyLedger()
+        }
+
+        if (!ledger) {
+          if (!cancelled) {
+            setActiveLedger(null)
+            setExpenses([])
+            setLedgerError('Ledger link not found.')
+          }
+          return
+        }
+
+        const rows = await fetchExpenses(ledger.id)
+
+        if (!cancelled) {
+          setActiveLedger(ledger)
+          setParticipantNames(ledger.participants)
+          setForm(makeEmptyForm(ledger.participants[0]))
+          setExpenses(rows)
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setActiveLedger(null)
+          setExpenses([])
+          setLedgerError(error instanceof Error ? error.message : 'Failed to load ledger')
+        }
+      } finally {
+        if (!cancelled) {
+          setLedgerLoading(false)
+        }
+      }
+    }
+
+    void loadLedger()
+
+    return () => {
+      cancelled = true
+    }
+  }, [isLandingRoute, routeShareCode])
 
   useEffect(() => {
     setForm((current) => {
@@ -239,44 +392,10 @@ function App() {
   }, [participantOptions])
 
   useEffect(() => {
-    let cancelled = false
-
-    async function load() {
-      if (!isSupabaseConfigured) {
-        setLoadingExpenses(false)
-        setLoadError(
-          'Missing Supabase environment variables. Add VITE_SUPABASE_URL and VITE_SUPABASE_PUBLISHABLE_KEY to connect data storage.',
-        )
-        return
-      }
-
-      setLoadingExpenses(true)
-      setLoadError(null)
-
-      try {
-        const rows = await fetchExpenses()
-        if (!cancelled) {
-          setExpenses(rows)
-        }
-      } catch (error) {
-        if (!cancelled) {
-          setLoadError(error instanceof Error ? error.message : 'Failed to load expenses')
-        }
-      } finally {
-        if (!cancelled) {
-          setLoadingExpenses(false)
-        }
-      }
+    if (isLandingRoute) {
+      return
     }
 
-    void load()
-
-    return () => {
-      cancelled = true
-    }
-  }, [])
-
-  useEffect(() => {
     let cancelled = false
 
     async function buildSummary() {
@@ -308,7 +427,7 @@ function App() {
     return () => {
       cancelled = true
     }
-  }, [expenses, participantNames])
+  }, [expenses, participantNames, isLandingRoute])
 
   async function refreshExpenses() {
     if (!isSupabaseConfigured) {
@@ -318,10 +437,15 @@ function App() {
       return
     }
 
+    if (!activeLedger) {
+      setLoadError('Ledger not loaded yet.')
+      return
+    }
+
     setLoadingExpenses(true)
     setLoadError(null)
     try {
-      const rows = await fetchExpenses()
+      const rows = await fetchExpenses(activeLedger.id)
       setExpenses(rows)
     } catch (error) {
       setLoadError(error instanceof Error ? error.message : 'Failed to load expenses')
@@ -336,6 +460,11 @@ function App() {
 
     if (!isSupabaseConfigured) {
       setSubmitError('Configure Supabase before submitting expenses.')
+      return
+    }
+
+    if (!activeLedger) {
+      setSubmitError('Ledger not loaded yet.')
       return
     }
 
@@ -359,11 +488,12 @@ function App() {
 
     const owedPercent = parseOwedPercentInput(form.owedPercent)
     if (Number.isNaN(owedPercent)) {
-      setSubmitError('On behalf % must be a number between 0 and 100.')
+      setSubmitError('Owed share % must be a number between 0 and 100.')
       return
     }
 
     const payload: ExpenseInsert = {
+      ledgerId: activeLedger.id,
       participant: form.participant,
       description: form.description.trim(),
       merchant: form.merchant.trim(),
@@ -377,7 +507,7 @@ function App() {
     setSubmitBusy(true)
     try {
       if (editingExpenseId) {
-        await updateExpense(editingExpenseId, payload)
+        await updateExpense(activeLedger.id, editingExpenseId, payload)
       } else {
         await createExpense(payload)
       }
@@ -467,6 +597,11 @@ function App() {
       return
     }
 
+    if (!activeLedger) {
+      setLoadError('Ledger not loaded yet.')
+      return
+    }
+
     const confirmed = window.confirm(`Delete "${expense.description}"?`)
     if (!confirmed) {
       return
@@ -477,7 +612,7 @@ function App() {
     setDeletingExpenseId(expense.id)
 
     try {
-      await deleteExpense(expense.id)
+      await deleteExpense(activeLedger.id, expense.id)
 
       if (editingExpenseId === expense.id) {
         setEditingExpenseId(null)
@@ -493,13 +628,42 @@ function App() {
     }
   }
 
-  function finalizeParticipantName(index: number) {
-    setParticipantNames((current) => {
-      const next = [...current] as ParticipantPair
-      next[index] = next[index].trim() || DEFAULT_PARTICIPANTS[index]
-      return next
-    })
+  async function finalizeParticipantName(index: number) {
+    const next = [...participantNames] as ParticipantPair
+    next[index] = next[index].trim() || DEFAULT_PARTICIPANTS[index]
+    setParticipantNames(next)
     setRenamingParticipantIndex(null)
+
+    if (!activeLedger) {
+      return
+    }
+
+    try {
+      const updated = await updateLedgerParticipants(activeLedger.id, next)
+      setActiveLedger(updated)
+      setParticipantNames(updated.participants)
+    } catch (error) {
+      setLoadError(error instanceof Error ? error.message : 'Failed to update participant names')
+    }
+  }
+
+  async function handleGenerateLink() {
+    setLandingError(null)
+
+    if (!isSupabaseConfigured) {
+      setLandingError('Configure Supabase before generating links.')
+      return
+    }
+
+    setCreatingLedger(true)
+    try {
+      const ledger = await createLedger(DEFAULT_PARTICIPANTS)
+      window.location.assign(appLedgerPath(ledger.shareCode))
+    } catch (error) {
+      setLandingError(error instanceof Error ? error.message : 'Failed to generate link')
+    } finally {
+      setCreatingLedger(false)
+    }
   }
 
   const groupedExpenses = useMemo(() => {
@@ -528,15 +692,110 @@ function App() {
     [editingExpenseId, expenses],
   )
 
+  const legacyShareCode = legacyLedger?.shareCode ?? LEGACY_LEDGER_SHARE_CODE
+  const legacyLedgerLink = appLedgerPath(legacyShareCode)
+  const legacyLedgerLinkDisplay = appLedgerUrl(legacyShareCode)
+
+  if (isLandingRoute) {
+    return (
+      <div className="app-shell">
+        <main className="ledger-app">
+          <header className="hero-card panel">
+            <div>
+              <p className="eyebrow">Ledger</p>
+              <h1>Shared Ledger Links</h1>
+              <p className="muted">Generate a dedicated ledger URL for any two-party expense tracking.</p>
+            </div>
+          </header>
+
+          <section className="panel landing-panel">
+            <div className="section-head">
+              <h2>Create New Shared Ledger</h2>
+              <p className="muted tiny">Each generated link gets its own isolated expenses and participant names.</p>
+            </div>
+            <div className="landing-actions">
+              <button
+                type="button"
+                className="primary-button"
+                onClick={() => void handleGenerateLink()}
+                disabled={creatingLedger || !isSupabaseConfigured}
+              >
+                {creatingLedger ? 'Generating…' : 'Generate Link'}
+              </button>
+            </div>
+            {landingError && <p className="status-line error">{landingError}</p>}
+          </section>
+
+          <section className="panel landing-panel">
+            <div className="section-head">
+              <h2>Existing Ryan + Ben Ledger</h2>
+              <p className="muted tiny">Legacy data is preserved under this dedicated share link.</p>
+            </div>
+            <a className="secondary-button inline-link-button" href={legacyLedgerLink}>
+              {legacyLedgerLinkDisplay}
+            </a>
+            {landingBusy && <p className="status-line">Preparing dedicated link…</p>}
+          </section>
+
+          {!isSupabaseConfigured && (
+            <section className="panel setup-panel">
+              <h2>Supabase setup required</h2>
+              <p className="muted">
+                Add your Supabase project URL and publishable key to <code>.env</code>, then create the{' '}
+                <code>expenses</code> and <code>ledgers</code> tables using the SQL in <code>supabase/schema.sql</code>.
+              </p>
+            </section>
+          )}
+        </main>
+      </div>
+    )
+  }
+
+  if (ledgerLoading && !activeLedger) {
+    return (
+      <div className="app-shell">
+        <main className="ledger-app">
+          <section className="panel landing-panel">
+            <h2>Loading ledger…</h2>
+            <p className="status-line">Fetching ledger link and expenses.</p>
+          </section>
+        </main>
+      </div>
+    )
+  }
+
+  if (!activeLedger) {
+    return (
+      <div className="app-shell">
+        <main className="ledger-app">
+          <section className="panel landing-panel">
+            <h2>Ledger unavailable</h2>
+            <p className="status-line error">{ledgerError ?? 'Could not load this ledger link.'}</p>
+            <a className="secondary-button inline-link-button" href={appHomePath()}>
+              Back to links
+            </a>
+          </section>
+        </main>
+      </div>
+    )
+  }
+
+  const ledgerTitle = `${participantOptions[0]} and ${participantOptions[1]} Ledger`
+  const activeLedgerUrl = appLedgerUrl(activeLedger.shareCode)
+
   return (
     <div className="app-shell">
       <main className="ledger-app">
         <header className="hero-card panel">
           <div>
             <p className="eyebrow">Ledger</p>
-            <h1>Ryan and Ben Ledger</h1>
+            <h1>{ledgerTitle}</h1>
+            <p className="muted tiny">Share link: {activeLedgerUrl}</p>
           </div>
           <div className="hero-actions">
+            <a className="secondary-button inline-link-button" href={appHomePath()}>
+              Links
+            </a>
             <button type="button" className="secondary-button" onClick={() => void refreshExpenses()}>
               Refresh
             </button>
@@ -559,6 +818,7 @@ function App() {
           </div>
 
           {(loadingExpenses || summaryLoading) && <p className="status-line">Calculating totals…</p>}
+          {ledgerError && <p className="status-line error">{ledgerError}</p>}
           {loadError && <p className="status-line error">{loadError}</p>}
           {summaryError && <p className="status-line error">{summaryError}</p>}
         </section>
@@ -566,18 +826,10 @@ function App() {
         <section className={`panel form-panel ${formOpen || editingExpense ? 'open' : 'collapsed'}`}>
           <div className="section-head">
             <h2>{editingExpense ? 'Edit Expense' : 'Add Expense'}</h2>
-            <p className="muted tiny">
-              {editingExpense
-                ? editingExpense.description
-                : 'Manual entry or receipt photo.'}
-            </p>
+            <p className="muted tiny">{editingExpense ? editingExpense.description : 'Manual entry or receipt photo.'}</p>
           </div>
           {!editingExpense && (
-            <button
-              type="button"
-              className="secondary-button"
-              onClick={() => setFormOpen((current) => !current)}
-            >
+            <button type="button" className="secondary-button" onClick={() => setFormOpen((current) => !current)}>
               {formOpen ? 'Hide' : 'Add Expense'}
             </button>
           )}
@@ -585,20 +837,10 @@ function App() {
           {(formOpen || editingExpense) && (
             <>
               <div className="receipt-actions">
-                <button
-                  type="button"
-                  className="secondary-button"
-                  onClick={openUploadPicker}
-                  disabled={ocrBusy}
-                >
+                <button type="button" className="secondary-button" onClick={openUploadPicker} disabled={ocrBusy}>
                   {ocrBusy ? 'Reading…' : 'Upload'}
                 </button>
-                <button
-                  type="button"
-                  className="secondary-button"
-                  onClick={openCameraPicker}
-                  disabled={ocrBusy}
-                >
+                <button type="button" className="secondary-button" onClick={openCameraPicker} disabled={ocrBusy}>
                   Take Photo
                 </button>
                 <input
@@ -632,98 +874,98 @@ function App() {
               </div>
 
               <form className="expense-form" onSubmit={handleSubmit}>
-            <label>
-              <span>Participant</span>
-              <select value={form.participant} onChange={(e) => updateForm('participant', e.target.value)}>
-                {participantOptions.map((name) => (
-                  <option key={name} value={name}>
-                    {name}
-                  </option>
-                ))}
-              </select>
-            </label>
+                <label>
+                  <span>Participant</span>
+                  <select value={form.participant} onChange={(e) => updateForm('participant', e.target.value)}>
+                    {participantOptions.map((name) => (
+                      <option key={name} value={name}>
+                        {name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
 
-            <label>
-              <span>Description</span>
-              <input
-                type="text"
-                value={form.description}
-                onChange={(e) => updateForm('description', e.target.value)}
-                placeholder="Dinner, hotel, rideshare..."
-                required
-              />
-            </label>
+                <label>
+                  <span>Description</span>
+                  <input
+                    type="text"
+                    value={form.description}
+                    onChange={(e) => updateForm('description', e.target.value)}
+                    placeholder="Dinner, hotel, rideshare..."
+                    required
+                  />
+                </label>
 
-            <label>
-              <span>Merchant (optional)</span>
-              <input
-                type="text"
-                value={form.merchant}
-                onChange={(e) => updateForm('merchant', e.target.value)}
-                placeholder="Merchant name"
-              />
-            </label>
+                <label>
+                  <span>Merchant (optional)</span>
+                  <input
+                    type="text"
+                    value={form.merchant}
+                    onChange={(e) => updateForm('merchant', e.target.value)}
+                    placeholder="Merchant name"
+                  />
+                </label>
 
-            <div className="form-row">
-              <label>
-                <span>Amount</span>
-                <input
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  inputMode="decimal"
-                  value={form.amount}
-                  onChange={(e) => updateForm('amount', e.target.value)}
-                  placeholder="0.00"
-                  required
-                />
-              </label>
-              <label>
-                <span>Currency</span>
-                <input
-                  type="text"
-                  value={form.currency}
-                  onChange={(e) => updateForm('currency', e.target.value.toUpperCase())}
-                  placeholder="USD"
-                  maxLength={3}
-                  required
-                />
-              </label>
-              <DatePickerField value={form.incurredOn} onChange={(value) => updateForm('incurredOn', value)} />
-              <label>
-                <span>Owed share %</span>
-                <input
-                  type="text"
-                  inputMode="decimal"
-                  value={form.owedPercent}
-                  onChange={(e) => updateForm('owedPercent', e.target.value)}
-                  placeholder="100"
-                />
-              </label>
-            </div>
-            <p className="muted tiny percent-help">Custom split (Splitwise-style). Blank = 100%.</p>
+                <div className="form-row">
+                  <label>
+                    <span>Amount</span>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      inputMode="decimal"
+                      value={form.amount}
+                      onChange={(e) => updateForm('amount', e.target.value)}
+                      placeholder="0.00"
+                      required
+                    />
+                  </label>
+                  <label>
+                    <span>Currency</span>
+                    <input
+                      type="text"
+                      value={form.currency}
+                      onChange={(e) => updateForm('currency', e.target.value.toUpperCase())}
+                      placeholder="USD"
+                      maxLength={3}
+                      required
+                    />
+                  </label>
+                  <DatePickerField value={form.incurredOn} onChange={(value) => updateForm('incurredOn', value)} />
+                  <label>
+                    <span>Owed share %</span>
+                    <input
+                      type="text"
+                      inputMode="decimal"
+                      value={form.owedPercent}
+                      onChange={(e) => updateForm('owedPercent', e.target.value)}
+                      placeholder="100"
+                    />
+                  </label>
+                </div>
+                <p className="muted tiny percent-help">Custom split (Splitwise-style). Blank = 100%.</p>
 
-            <label>
-              <span>Notes (optional)</span>
-              <textarea
-                value={form.notes}
-                onChange={(e) => updateForm('notes', e.target.value)}
-                rows={3}
-                placeholder="Context, split assumptions, trip info..."
-              />
-            </label>
+                <label>
+                  <span>Notes (optional)</span>
+                  <textarea
+                    value={form.notes}
+                    onChange={(e) => updateForm('notes', e.target.value)}
+                    rows={3}
+                    placeholder="Context, split assumptions, trip info..."
+                  />
+                </label>
 
-            <div className="form-actions">
-              <button type="submit" className="primary-button" disabled={submitBusy}>
-                {submitBusy ? 'Saving…' : editingExpense ? 'Update Expense' : 'Save Expense'}
-              </button>
-              {editingExpense && (
-                <button type="button" className="secondary-button" onClick={cancelEdit} disabled={submitBusy}>
-                  Cancel Edit
-                </button>
-              )}
-              {submitError && <p className="status-line error inline">{submitError}</p>}
-            </div>
+                <div className="form-actions">
+                  <button type="submit" className="primary-button" disabled={submitBusy}>
+                    {submitBusy ? 'Saving…' : editingExpense ? 'Update Expense' : 'Save Expense'}
+                  </button>
+                  {editingExpense && (
+                    <button type="button" className="secondary-button" onClick={cancelEdit} disabled={submitBusy}>
+                      Cancel Edit
+                    </button>
+                  )}
+                  {submitError && <p className="status-line error inline">{submitError}</p>}
+                </div>
               </form>
 
               {ocrTextPreview && (
@@ -741,8 +983,7 @@ function App() {
             <h2>Supabase setup required</h2>
             <p className="muted">
               Add your Supabase project URL and publishable key to <code>.env</code>, then create the{' '}
-              <code>expenses</code>{' '}
-              table using the SQL in <code>supabase/schema.sql</code>.
+              <code>expenses</code> and <code>ledgers</code> tables using the SQL in <code>supabase/schema.sql</code>.
             </p>
           </section>
         )}
@@ -768,11 +1009,11 @@ function App() {
                           next[participantIndex] = event.target.value
                           setParticipantNames(next)
                         }}
-                        onBlur={() => finalizeParticipantName(participantIndex)}
+                        onBlur={() => void finalizeParticipantName(participantIndex)}
                         onKeyDown={(event) => {
                           if (event.key === 'Enter') {
                             event.preventDefault()
-                            finalizeParticipantName(participantIndex)
+                            void finalizeParticipantName(participantIndex)
                           }
                           if (event.key === 'Escape') {
                             event.preventDefault()
@@ -820,9 +1061,7 @@ function App() {
                             <div className="expense-amounts">
                               <strong>{formatCurrency(expense.amount, expense.currency)}</strong>
                               {converted && expense.currency !== converted.convertedCurrency && (
-                                <span>
-                                  {formatCurrency(converted.convertedAmount, converted.convertedCurrency)}
-                                </span>
+                                <span>{formatCurrency(converted.convertedAmount, converted.convertedCurrency)}</span>
                               )}
                               <div className="row-actions">
                                 <button type="button" className="mini-button" onClick={() => beginEditExpense(expense)}>
