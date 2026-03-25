@@ -259,8 +259,6 @@ function App() {
   const [routeShareCode, setRouteShareCode] = useState<string | null>(() => readCurrentShareCode())
   const isLandingRoute = routeShareCode == null
 
-  const [legacyLedger, setLegacyLedger] = useState<Ledger | null>(null)
-  const [landingBusy, setLandingBusy] = useState(false)
   const [landingError, setLandingError] = useState<string | null>(null)
   const [creatingLedger, setCreatingLedger] = useState(false)
 
@@ -306,43 +304,6 @@ function App() {
       window.removeEventListener('popstate', syncRoute)
     }
   }, [])
-
-  useEffect(() => {
-    if (!isLandingRoute) {
-      return
-    }
-
-    if (!isSupabaseConfigured) {
-      return
-    }
-
-    let cancelled = false
-
-    async function loadLandingData() {
-      setLandingBusy(true)
-      setLandingError(null)
-      try {
-        const ledger = await ensureLegacyLedger()
-        if (!cancelled) {
-          setLegacyLedger(ledger)
-        }
-      } catch (error) {
-        if (!cancelled) {
-          setLandingError(error instanceof Error ? error.message : 'Failed to load legacy ledger link')
-        }
-      } finally {
-        if (!cancelled) {
-          setLandingBusy(false)
-        }
-      }
-    }
-
-    void loadLandingData()
-
-    return () => {
-      cancelled = true
-    }
-  }, [isLandingRoute])
 
   useEffect(() => {
     const shareCode = routeShareCode
@@ -721,10 +682,6 @@ function App() {
     [editingExpenseId, expenses],
   )
 
-  const legacyShareCode = legacyLedger?.shareCode ?? LEGACY_LEDGER_SHARE_CODE
-  const legacyLedgerLink = appLedgerPath(legacyShareCode)
-  const legacyLedgerLinkDisplay = appLedgerUrl(legacyShareCode)
-
   if (isLandingRoute) {
     return (
       <div className="app-shell">
@@ -753,17 +710,6 @@ function App() {
               </button>
             </div>
             {landingError && <p className="status-line error">{landingError}</p>}
-          </section>
-
-          <section className="panel landing-panel">
-            <div className="section-head">
-              <h2>Existing Ryan + Ben Ledger</h2>
-              <p className="muted tiny">Legacy data is preserved under this dedicated share link.</p>
-            </div>
-            <a className="secondary-button inline-link-button" href={legacyLedgerLink}>
-              {legacyLedgerLinkDisplay}
-            </a>
-            {landingBusy && <p className="status-line">Preparing dedicated link…</p>}
           </section>
 
           {!isSupabaseConfigured && (
