@@ -2,8 +2,8 @@
 
 A minimal shared-expense ledger web app (React + Vite) with:
 
-- Link-based ledgers (`/custom-ledger/<share-code>`) generated on demand
-- Dedicated legacy ledger link for existing `Ryan` + `Ben` data (`/custom-ledger/ryan-ben`)
+- Link-based ledgers (`/custom-ledger/#/<share-code>`) generated on demand
+- Dedicated legacy ledger link for existing `Ryan` + `Ben` data (`/custom-ledger/#/ryan-ben`)
 - Two participant columns per ledger (editable in the UI)
 - Supabase-backed expense storage
 - Historical FX conversion by expense date (via Frankfurter)

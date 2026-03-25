@@ -47,11 +47,21 @@ function appHomePath() {
 }
 
 function appLedgerPath(shareCode: string) {
-  return `${APP_BASE_PATH}${encodeURIComponent(shareCode)}`
+  return `${APP_BASE_PATH}#/${encodeURIComponent(shareCode)}`
 }
 
 function appLedgerUrl(shareCode: string) {
   return new URL(appLedgerPath(shareCode), window.location.origin).toString()
+}
+
+function readLedgerShareCodeFromHash(hash: string) {
+  const normalized = hash.replace(/^#\/?/, '')
+  if (!normalized) {
+    return null
+  }
+
+  const [segment] = normalized.split('/').filter(Boolean)
+  return segment ? decodeURIComponent(segment) : null
 }
 
 function readLedgerShareCodeFromPath(pathname: string) {
@@ -73,6 +83,11 @@ function readLedgerShareCodeFromPath(pathname: string) {
 }
 
 function readCurrentShareCode() {
+  const hashShareCode = readLedgerShareCodeFromHash(window.location.hash)
+  if (hashShareCode) {
+    return hashShareCode
+  }
+
   return readLedgerShareCodeFromPath(window.location.pathname)
 }
 
@@ -241,7 +256,7 @@ function DatePickerField({
 }
 
 function App() {
-  const routeShareCode = useMemo(() => readCurrentShareCode(), [])
+  const [routeShareCode, setRouteShareCode] = useState<string | null>(() => readCurrentShareCode())
   const isLandingRoute = routeShareCode == null
 
   const [legacyLedger, setLegacyLedger] = useState<Ledger | null>(null)
@@ -277,6 +292,20 @@ function App() {
   const cameraInputRef = useRef<HTMLInputElement | null>(null)
 
   const participantOptions = participantNames
+
+  useEffect(() => {
+    function syncRoute() {
+      setRouteShareCode(readCurrentShareCode())
+    }
+
+    window.addEventListener('hashchange', syncRoute)
+    window.addEventListener('popstate', syncRoute)
+
+    return () => {
+      window.removeEventListener('hashchange', syncRoute)
+      window.removeEventListener('popstate', syncRoute)
+    }
+  }, [])
 
   useEffect(() => {
     if (!isLandingRoute) {

@@ -75,7 +75,7 @@ async function main() {
   await ensureNoVisibleErrors(page, 'landing')
 
   await page.getByRole('button', { name: 'Generate Link' }).click()
-  await page.waitForURL(/\/custom-ledger\/[a-z0-9-]+$/)
+  await page.waitForURL(/\/custom-ledger\/#\/[a-z0-9-]+$/)
 
   const generatedUrl = page.url()
   const generatedDescription = uniqueDescription()
@@ -89,7 +89,7 @@ async function main() {
   await page.getByRole('heading', { name: 'Shared Ledger Links' }).waitFor()
 
   await page.getByRole('link', { name: /ryan-ben/ }).click()
-  await page.waitForURL(/\/custom-ledger\/ryan-ben$/)
+  await page.waitForURL(/\/custom-ledger\/#\/ryan-ben$/)
   await ensureNoVisibleErrors(page, 'legacy-ledger')
 
   const leaked = await page.locator('.expense-item').filter({ hasText: generatedDescription }).count()
@@ -111,7 +111,7 @@ async function main() {
     console.log('PAGE_ERRORS', JSON.stringify(pageErrors))
   }
 
-  console.log('RESULT', JSON.stringify({ generatedUrl, legacyUrl: `${baseUrl}ryan-ben` }))
+  console.log('RESULT', JSON.stringify({ generatedUrl, legacyUrl: `${baseUrl}#/ryan-ben` }))
 
   await browser.close()
 }
