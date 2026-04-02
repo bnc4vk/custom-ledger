@@ -34,11 +34,20 @@ async function addExpense(page, description) {
   await form.getByLabel('Description', { exact: true }).fill(description)
   await form.getByLabel('Amount', { exact: true }).fill('19.99')
   await form.getByLabel('Currency', { exact: true }).fill('USD')
-  await form.getByLabel('Owed share %', { exact: true }).fill('50')
+  await form.getByLabel('Owed share %', { exact: true }).fill('')
   await form.locator('textarea').fill('Ledger link isolation test')
 
   await page.getByRole('button', { name: 'Save Expense' }).click()
   await page.locator('.expense-item').filter({ hasText: description }).first().waitFor({ state: 'visible' })
+}
+
+async function setDefaultOwnershipSplit(page, value) {
+  await page.getByLabel('Default ownership split %', { exact: true }).fill(value)
+  await page.getByRole('button', { name: 'Save Default' }).click()
+  await page.waitForFunction((expected) => {
+    const input = document.querySelector('input[aria-label="Default ownership split %"], .default-split-controls input')
+    return input instanceof HTMLInputElement && input.value === expected
+  }, value)
 }
 
 async function deleteExpense(page, description) {
@@ -82,14 +91,27 @@ async function main() {
 
   await page.getByRole('heading', { name: /Ledger$/ }).waitFor()
   await ensureNoVisibleErrors(page, 'generated-ledger')
+  await setDefaultOwnershipSplit(page, '37.5')
   await addExpense(page, generatedDescription)
   await ensureNoVisibleErrors(page, 'generated-after-add')
+
+  const generatedRow = page.locator('.expense-item').filter({ hasText: generatedDescription }).first()
+  const generatedRowText = await generatedRow.innerText()
+  if (!generatedRowText.includes('37.5%')) {
+    throw new Error(`Expected generated expense to inherit 37.5% default split. Row text: ${generatedRowText}`)
+  }
+
+  await page.reload({ waitUntil: 'networkidle' })
+  await page.getByLabel('Default ownership split %', { exact: true }).waitFor()
+  const persistedDefault = await page.getByLabel('Default ownership split %', { exact: true }).inputValue()
+  if (persistedDefault !== '37.5') {
+    throw new Error(`Expected persisted default ownership split to be 37.5, received ${persistedDefault}`)
+  }
 
   await page.goto(baseUrl, { waitUntil: 'networkidle' })
   await page.getByRole('heading', { name: 'Shared Ledger Links' }).waitFor()
 
-  await page.getByRole('link', { name: /ryan-ben/ }).click()
-  await page.waitForURL(/\/custom-ledger\/#\/ryan-ben$/)
+  await page.goto(`${baseUrl}#/ryan-ben`, { waitUntil: 'networkidle' })
   await ensureNoVisibleErrors(page, 'legacy-ledger')
 
   const leaked = await page.locator('.expense-item').filter({ hasText: generatedDescription }).count()

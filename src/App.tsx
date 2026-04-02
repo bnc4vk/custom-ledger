@@ -14,6 +14,7 @@ import {
   fetchLedgerByShareCode,
   isSupabaseConfigured,
   updateExpense,
+  updateLedgerDefaultOwedPercent,
   updateLedgerParticipants,
 } from './lib/supabase'
 import type {
@@ -182,6 +183,11 @@ function formatPercentChip(value: number) {
   return `${text}%`
 }
 
+function formatPercentInputValue(value: number) {
+  const rounded = Math.round((value + Number.EPSILON) * 100) / 100
+  return Number.isInteger(rounded) ? String(rounded) : String(rounded)
+}
+
 function percentChipStyle(value: number) {
   const ratio = effectiveOwedPercent(value) / 100
   const bgAlpha = 0.05 + ratio * 0.18
@@ -267,6 +273,10 @@ function App() {
   const [ledgerError, setLedgerError] = useState<string | null>(null)
 
   const [participantNames, setParticipantNames] = useState<ParticipantPair>(DEFAULT_PARTICIPANTS)
+  const [defaultOwedPercent, setDefaultOwedPercent] = useState(100)
+  const [defaultOwedPercentInput, setDefaultOwedPercentInput] = useState('100')
+  const [defaultOwedPercentSaving, setDefaultOwedPercentSaving] = useState(false)
+  const [defaultOwedPercentError, setDefaultOwedPercentError] = useState<string | null>(null)
   const [expenses, setExpenses] = useState<Expense[]>([])
   const [loadingExpenses, setLoadingExpenses] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -349,6 +359,9 @@ function App() {
         if (!cancelled) {
           setActiveLedger(ledger)
           setParticipantNames(ledger.participants)
+          setDefaultOwedPercent(ledger.defaultOwedPercent)
+          setDefaultOwedPercentInput(formatPercentInputValue(ledger.defaultOwedPercent))
+          setDefaultOwedPercentError(null)
           setForm(makeEmptyForm(ledger.participants[0]))
           setExpenses(rows)
         }
@@ -490,7 +503,7 @@ function App() {
       amount,
       currency: form.currency.trim().toUpperCase(),
       incurredOn: form.incurredOn,
-      owedPercent,
+      owedPercent: owedPercent ?? defaultOwedPercent,
       notes: form.notes.trim(),
     }
 
@@ -637,6 +650,43 @@ function App() {
     }
   }
 
+  async function handleSaveDefaultOwedPercent() {
+    setDefaultOwedPercentError(null)
+
+    if (!isSupabaseConfigured) {
+      setDefaultOwedPercentError('Configure Supabase before updating the default ownership split.')
+      return
+    }
+
+    if (!activeLedger) {
+      setDefaultOwedPercentError('Ledger not loaded yet.')
+      return
+    }
+
+    const parsed = parseOwedPercentInput(defaultOwedPercentInput)
+    if (parsed == null || Number.isNaN(parsed)) {
+      setDefaultOwedPercentError('Default ownership split must be a number between 0 and 100.')
+      return
+    }
+
+    const previousDefaultOwedPercent = defaultOwedPercent
+    setDefaultOwedPercent(parsed)
+    setDefaultOwedPercentSaving(true)
+    try {
+      const updated = await updateLedgerDefaultOwedPercent(activeLedger.id, parsed)
+      setActiveLedger(updated)
+      setDefaultOwedPercent(updated.defaultOwedPercent)
+      setDefaultOwedPercentInput(formatPercentInputValue(updated.defaultOwedPercent))
+    } catch (error) {
+      setDefaultOwedPercent(previousDefaultOwedPercent)
+      setDefaultOwedPercentError(
+        error instanceof Error ? error.message : 'Failed to update the default ownership split',
+      )
+    } finally {
+      setDefaultOwedPercentSaving(false)
+    }
+  }
+
   async function handleGenerateLink() {
     setLandingError(null)
 
@@ -778,6 +828,39 @@ function App() {
         </header>
 
         <section className="panel summary-panel">
+          <div className="default-split-bar">
+            <div className="section-head">
+              <h2>Default Ownership Split</h2>
+              <p className="muted tiny">Used for new expenses when “Owed share %” is left blank.</p>
+            </div>
+            <div className="default-split-controls">
+              <label>
+                <span>Default ownership split %</span>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={defaultOwedPercentInput}
+                  onChange={(event) => setDefaultOwedPercentInput(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') {
+                      event.preventDefault()
+                      void handleSaveDefaultOwedPercent()
+                    }
+                  }}
+                />
+              </label>
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => void handleSaveDefaultOwedPercent()}
+                disabled={defaultOwedPercentSaving}
+              >
+                {defaultOwedPercentSaving ? 'Saving…' : 'Save Default'}
+              </button>
+            </div>
+            {defaultOwedPercentError && <p className="status-line error">{defaultOwedPercentError}</p>}
+          </div>
+
           <div className="settlement-spotlight">
             <span className="stat-label">Settlement</span>
             <strong className="spotlight-amount">
@@ -914,11 +997,13 @@ function App() {
                       inputMode="decimal"
                       value={form.owedPercent}
                       onChange={(e) => updateForm('owedPercent', e.target.value)}
-                      placeholder="100"
+                      placeholder={formatPercentInputValue(defaultOwedPercent)}
                     />
                   </label>
                 </div>
-                <p className="muted tiny percent-help">Custom split (Splitwise-style). Blank = 100%.</p>
+                <p className="muted tiny percent-help">
+                  Custom split (Splitwise-style). Blank uses the ledger default: {formatPercentChip(defaultOwedPercent)}.
+                </p>
 
                 <label>
                   <span>Notes (optional)</span>

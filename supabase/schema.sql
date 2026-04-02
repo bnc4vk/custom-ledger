@@ -5,12 +5,33 @@ create table if not exists public.ledgers (
   share_code text not null unique check (share_code ~ '^[a-z0-9-]{3,40}$'),
   participant_a text not null default 'Participant A',
   participant_b text not null default 'Participant B',
+  default_owed_percent numeric(5,2) not null default 100 check (default_owed_percent >= 0 and default_owed_percent <= 100),
   created_at timestamptz not null default now()
 );
 
 insert into public.ledgers (share_code, participant_a, participant_b)
 values ('ryan-ben', 'Ryan', 'Ben')
 on conflict (share_code) do nothing;
+
+alter table public.ledgers
+add column if not exists default_owed_percent numeric(5,2);
+
+update public.ledgers
+set default_owed_percent = 100
+where default_owed_percent is null;
+
+alter table public.ledgers
+alter column default_owed_percent set default 100;
+
+alter table public.ledgers
+alter column default_owed_percent set not null;
+
+alter table public.ledgers
+drop constraint if exists ledgers_default_owed_percent_check;
+
+alter table public.ledgers
+add constraint ledgers_default_owed_percent_check
+check (default_owed_percent >= 0 and default_owed_percent <= 100);
 
 create table if not exists public.expenses (
   id uuid primary key default gen_random_uuid(),

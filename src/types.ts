@@ -5,6 +5,7 @@ export interface LedgerRow {
   share_code: string
   participant_a: string
   participant_b: string
+  default_owed_percent?: number | string | null
   created_at: string
 }
 
@@ -12,6 +13,7 @@ export interface Ledger {
   id: string
   shareCode: string
   participants: ParticipantPair
+  defaultOwedPercent: number
   createdAt: string
 }
 

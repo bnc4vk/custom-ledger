@@ -23,6 +23,7 @@ function mapSupabaseErrorMessage(message: string) {
   if (
     normalized.includes("'is_shared' column") ||
     normalized.includes("'owed_percent' column") ||
+    normalized.includes("'default_owed_percent' column") ||
     normalized.includes("'ledger_id' column") ||
     normalized.includes("'share_code' column") ||
     normalized.includes('relation "ledgers" does not exist') ||
@@ -45,10 +46,19 @@ function requireClient() {
 }
 
 function mapLedger(row: LedgerRow): Ledger {
+  const rawDefaultOwedPercent =
+    typeof row.default_owed_percent === 'number'
+      ? row.default_owed_percent
+      : typeof row.default_owed_percent === 'string'
+        ? Number.parseFloat(row.default_owed_percent)
+        : null
+
   return {
     id: row.id,
     shareCode: row.share_code,
     participants: [row.participant_a, row.participant_b],
+    defaultOwedPercent:
+      rawDefaultOwedPercent != null && Number.isFinite(rawDefaultOwedPercent) ? rawDefaultOwedPercent : 100,
     createdAt: row.created_at,
   }
 }
@@ -133,6 +143,7 @@ export async function ensureLegacyLedger(): Promise<Ledger> {
     share_code: LEGACY_LEDGER_SHARE_CODE,
     participant_a: LEGACY_LEDGER_PARTICIPANTS[0],
     participant_b: LEGACY_LEDGER_PARTICIPANTS[1],
+    default_owed_percent: 100,
   }
 
   const { data, error } = await client.from('ledgers').insert(payload).select('*').single()
@@ -162,6 +173,7 @@ export async function createLedger(participants: ParticipantPair): Promise<Ledge
       share_code: generateShareCode(),
       participant_a: normalizedParticipants[0],
       participant_b: normalizedParticipants[1],
+      default_owed_percent: 100,
     }
 
     const { data, error } = await client.from('ledgers').insert(payload).select('*').single()
@@ -190,6 +202,23 @@ export async function updateLedgerParticipants(ledgerId: string, participants: P
   const { data, error } = await client
     .from('ledgers')
     .update(payload)
+    .eq('id', ledgerId)
+    .select('*')
+    .single()
+
+  if (error) {
+    throw new Error(mapSupabaseErrorMessage(error.message))
+  }
+
+  return mapLedger(data as LedgerRow)
+}
+
+export async function updateLedgerDefaultOwedPercent(ledgerId: string, defaultOwedPercent: number): Promise<Ledger> {
+  const client = requireClient()
+
+  const { data, error } = await client
+    .from('ledgers')
+    .update({ default_owed_percent: defaultOwedPercent })
     .eq('id', ledgerId)
     .select('*')
     .single()
