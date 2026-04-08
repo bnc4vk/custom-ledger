@@ -93,7 +93,7 @@ function readCurrentShareCode() {
 }
 
 function todayIso() {
-  return new Date().toISOString().slice(0, 10)
+  return format(new Date(), 'yyyy-MM-dd')
 }
 
 function makeEmptyForm(participant: string, currency = 'USD'): ExpenseFormState {
@@ -250,7 +250,7 @@ function DatePickerField({
               selected={selectedDate}
               onSelect={(date) => {
                 if (!date) return
-                onChange(date.toISOString().slice(0, 10))
+                onChange(format(date, 'yyyy-MM-dd'))
                 setOpen(false)
               }}
             />
