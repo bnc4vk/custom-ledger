@@ -86,18 +86,35 @@ export interface ConvertedExpense extends Expense {
   fxRate: number
 }
 
+export interface ParticipantContributionSnapshot {
+  paid: number
+  effectiveContribution: number
+  effectiveRate: number
+}
+
+export interface SettlementSummary {
+  debtor: string
+  creditor: string
+  amount: number
+}
+
+export interface MonthlyLedgerSummary {
+  month: string
+  totalSpend: number
+  participantSnapshots: Record<string, ParticipantContributionSnapshot>
+  settlement: SettlementSummary | null
+}
+
 export interface LedgerSummary {
   commonCurrency: string
   ledgerTotal: number
   sharedLedgerTotal: number
   fairShare: number
   participantTotals: Record<string, number>
+  participantContributionSnapshots: Record<string, ParticipantContributionSnapshot>
   sharedParticipantTotals: Record<string, number>
-  settlement: {
-    debtor: string
-    creditor: string
-    amount: number
-  } | null
+  settlement: SettlementSummary | null
+  monthlySummaries: MonthlyLedgerSummary[]
   convertedExpenses: ConvertedExpense[]
   currencyValueWeights: Record<string, number>
 }

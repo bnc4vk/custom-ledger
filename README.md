@@ -7,9 +7,10 @@ A minimal shared-expense ledger web app (React + Vite) with:
 - Two participant columns per ledger (editable in the UI)
 - Supabase-backed expense storage
 - Historical FX conversion by expense date (via Frankfurter)
-- Settlement calculation (equal split)
+- Settlement calculation with per-expense owed-share support
 - Mobile-friendly expense entry form
 - Receipt image upload / camera capture with free client-side OCR (`tesseract.js`) to prefill fields
+- Monthly contribution-rate breakdowns derived from spend + ledger tally
 
 ## Local setup
 
@@ -69,8 +70,10 @@ The app now uses:
 
 - The app chooses a **common display currency** based on the currency bucket with the highest total estimated value (using historical USD conversions per expense date).
 - Totals and settlement are then recalculated into that common currency using historical FX rates for each expense date.
-- For rows where `is_shared = true`, settlement assumes an **equal split** between the two participants.
-- For rows where `is_shared = false`, the payer is treated as having paid **100% on behalf of the other participant** (full reimbursement owed).
+- Each expense has an `owedPercent`, which represents the share owed by the **other participant** for that expense.
+- Example: if `Participant A` logs a `$100` expense with `owedPercent = 30`, then `Participant A` effectively contributed `$70` and `Participant B` effectively contributed `$30`.
+- The ledger tally is the net monthly or overall reimbursement needed to reconcile those per-expense ownership shares.
+- Monthly contribution rates are computed as `effective contribution / total spend` for each populated month, where effective contribution comes from the per-expense ownership shares rather than from the net tally alone.
 - The ledger total still includes all expenses (shared + non-shared).
 
 ## Notes / limitations

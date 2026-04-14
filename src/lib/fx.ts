@@ -1,4 +1,10 @@
-import type { Expense, LedgerSummary } from '../types'
+import type {
+  Expense,
+  LedgerSummary,
+  MonthlyLedgerSummary,
+  ParticipantContributionSnapshot,
+  SettlementSummary,
+} from '../types'
 
 const FX_API_BASE = 'https://api.frankfurter.dev/v1'
 const fxRateCache = new Map<string, Promise<number>>()
@@ -17,6 +23,44 @@ function normalizeOwedPercent(value: number | null | undefined) {
   }
 
   return Math.min(100, Math.max(0, value))
+}
+
+function settlementFromNet(netByParticipant: Record<string, number>): SettlementSummary | null {
+  const sortedParticipants = Object.entries(netByParticipant).sort((a, b) => a[1] - b[1])
+  if (sortedParticipants.length < 2) {
+    return null
+  }
+
+  const [debtor, creditor] = [sortedParticipants[0], sortedParticipants[sortedParticipants.length - 1]]
+  const amount = roundCurrency(Math.max(0, creditor[1]))
+  if (amount <= 0) {
+    return null
+  }
+
+  return {
+    debtor: debtor[0],
+    creditor: creditor[0],
+    amount,
+  }
+}
+
+function makeParticipantSnapshots(
+  participantTotals: Record<string, number>,
+  effectiveContributionTotals: Record<string, number>,
+  ledgerTotal: number,
+): Record<string, ParticipantContributionSnapshot> {
+  const snapshots: Record<string, ParticipantContributionSnapshot> = {}
+
+  for (const participant of Object.keys(participantTotals)) {
+    const effectiveContribution = roundCurrency(effectiveContributionTotals[participant] ?? 0)
+    snapshots[participant] = {
+      paid: roundCurrency(participantTotals[participant] ?? 0),
+      effectiveContribution,
+      effectiveRate: ledgerTotal > 0 ? roundCurrency((effectiveContribution / ledgerTotal) * 100) : 0,
+    }
+  }
+
+  return snapshots
 }
 
 export async function fetchFxRate(date: string, from: string, to: string): Promise<number> {
@@ -90,14 +134,27 @@ export async function computeLedgerSummary(
 ): Promise<LedgerSummary> {
   if (expenses.length === 0) {
     const names = participants ?? ['Participant A', 'Participant B']
+    const participantContributionSnapshots = Object.fromEntries(
+      names.map((name) => [
+        name,
+        {
+          paid: 0,
+          effectiveContribution: 0,
+          effectiveRate: 0,
+        },
+      ]),
+    ) as Record<string, ParticipantContributionSnapshot>
+
     return {
       commonCurrency: 'USD',
       ledgerTotal: 0,
       sharedLedgerTotal: 0,
       fairShare: 0,
       participantTotals: { [names[0]]: 0, [names[1]]: 0 },
+      participantContributionSnapshots,
       sharedParticipantTotals: { [names[0]]: 0, [names[1]]: 0 },
       settlement: null,
+      monthlySummaries: [],
       convertedExpenses: [],
       currencyValueWeights: {},
     }
@@ -149,7 +206,17 @@ export async function computeLedgerSummary(
 
   const participantTotals: Record<string, number> = {}
   const sharedParticipantTotals: Record<string, number> = {}
+  const effectiveContributionTotals: Record<string, number> = {}
   const settlementNetByParticipant: Record<string, number> = {}
+  const monthlyBucketMap = new Map<
+    string,
+    {
+      totalSpend: number
+      participantTotals: Record<string, number>
+      effectiveContributionTotals: Record<string, number>
+      settlementNetByParticipant: Record<string, number>
+    }
+  >()
 
   const settlementParticipants =
     participants ??
@@ -160,30 +227,66 @@ export async function computeLedgerSummary(
 
   for (const name of settlementParticipants ?? []) {
     settlementNetByParticipant[name] = 0
+    participantTotals[name] = 0
+    sharedParticipantTotals[name] = 0
+    effectiveContributionTotals[name] = 0
   }
 
   for (const expense of convertedExpenses) {
     const owedPercent = normalizeOwedPercent(expense.owedPercent)
-    participantTotals[expense.participant] = roundCurrency(
-      (participantTotals[expense.participant] ?? 0) + expense.convertedAmount,
-    )
+    const payer = expense.participant
+    participantTotals[payer] = roundCurrency((participantTotals[payer] ?? 0) + expense.convertedAmount)
     if (owedPercent === 50) {
-      sharedParticipantTotals[expense.participant] = roundCurrency(
-        (sharedParticipantTotals[expense.participant] ?? 0) + expense.convertedAmount,
-      )
+      sharedParticipantTotals[payer] = roundCurrency((sharedParticipantTotals[payer] ?? 0) + expense.convertedAmount)
     }
 
-    const payer = expense.participant
     if (settlementParticipants && settlementParticipants.includes(payer)) {
       const otherParticipant = settlementParticipants.find((name) => name !== payer)
       if (otherParticipant) {
         const credit = expense.convertedAmount * (owedPercent / 100)
-        settlementNetByParticipant[payer] = roundCurrency(
-          (settlementNetByParticipant[payer] ?? 0) + credit,
+        const payerContribution = expense.convertedAmount - credit
+        const otherContribution = credit
+
+        effectiveContributionTotals[payer] = roundCurrency(
+          (effectiveContributionTotals[payer] ?? 0) + payerContribution,
         )
+        effectiveContributionTotals[otherParticipant] = roundCurrency(
+          (effectiveContributionTotals[otherParticipant] ?? 0) + otherContribution,
+        )
+        settlementNetByParticipant[payer] = roundCurrency((settlementNetByParticipant[payer] ?? 0) + credit)
         settlementNetByParticipant[otherParticipant] = roundCurrency(
           (settlementNetByParticipant[otherParticipant] ?? 0) - credit,
         )
+
+        const month = normalizeDate(expense.incurredOn).slice(0, 7)
+        const bucket =
+          monthlyBucketMap.get(month) ??
+          {
+            totalSpend: 0,
+            participantTotals: Object.fromEntries(
+              settlementParticipants.map((name) => [name, 0]),
+            ) as Record<string, number>,
+            effectiveContributionTotals: Object.fromEntries(
+              settlementParticipants.map((name) => [name, 0]),
+            ) as Record<string, number>,
+            settlementNetByParticipant: Object.fromEntries(
+              settlementParticipants.map((name) => [name, 0]),
+            ) as Record<string, number>,
+          }
+
+        bucket.totalSpend = roundCurrency(bucket.totalSpend + expense.convertedAmount)
+        bucket.participantTotals[payer] = roundCurrency(bucket.participantTotals[payer] + expense.convertedAmount)
+        bucket.effectiveContributionTotals[payer] = roundCurrency(
+          bucket.effectiveContributionTotals[payer] + payerContribution,
+        )
+        bucket.effectiveContributionTotals[otherParticipant] = roundCurrency(
+          bucket.effectiveContributionTotals[otherParticipant] + otherContribution,
+        )
+        bucket.settlementNetByParticipant[payer] = roundCurrency(bucket.settlementNetByParticipant[payer] + credit)
+        bucket.settlementNetByParticipant[otherParticipant] = roundCurrency(
+          bucket.settlementNetByParticipant[otherParticipant] - credit,
+        )
+        monthlyBucketMap.set(month, bucket)
       }
     }
   }
@@ -191,6 +294,7 @@ export async function computeLedgerSummary(
   if (participants) {
     for (const name of participants) {
       participantTotals[name] = participantTotals[name] ?? 0
+      effectiveContributionTotals[name] = effectiveContributionTotals[name] ?? 0
       sharedParticipantTotals[name] = sharedParticipantTotals[name] ?? 0
       settlementNetByParticipant[name] = settlementNetByParticipant[name] ?? 0
     }
@@ -205,21 +309,24 @@ export async function computeLedgerSummary(
       .reduce((sum, expense) => sum + expense.convertedAmount, 0),
   )
   const fairShare = roundCurrency(sharedLedgerTotal / 2)
-
-  const sortedParticipants = Object.entries(settlementNetByParticipant).sort((a, b) => a[1] - b[1])
-  let settlement: LedgerSummary['settlement'] = null
-
-  if (sortedParticipants.length >= 2) {
-    const [debtor, creditor] = [sortedParticipants[0], sortedParticipants[sortedParticipants.length - 1]]
-    const amount = roundCurrency(Math.max(0, creditor[1]))
-    if (amount > 0) {
-      settlement = {
-        debtor: debtor[0],
-        creditor: creditor[0],
-        amount,
-      }
-    }
-  }
+  const participantContributionSnapshots = makeParticipantSnapshots(
+    participantTotals,
+    effectiveContributionTotals,
+    ledgerTotal,
+  )
+  const settlement = settlementFromNet(settlementNetByParticipant)
+  const monthlySummaries: MonthlyLedgerSummary[] = [...monthlyBucketMap.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([month, bucket]) => ({
+      month,
+      totalSpend: roundCurrency(bucket.totalSpend),
+      participantSnapshots: makeParticipantSnapshots(
+        bucket.participantTotals,
+        bucket.effectiveContributionTotals,
+        bucket.totalSpend,
+      ),
+      settlement: settlementFromNet(bucket.settlementNetByParticipant),
+    }))
 
   return {
     commonCurrency,
@@ -227,8 +334,10 @@ export async function computeLedgerSummary(
     sharedLedgerTotal,
     fairShare,
     participantTotals,
+    participantContributionSnapshots,
     sharedParticipantTotals,
     settlement,
+    monthlySummaries,
     convertedExpenses,
     currencyValueWeights,
   }
