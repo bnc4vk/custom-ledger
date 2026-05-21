@@ -24,10 +24,12 @@ import type {
   ExpenseInsert,
   Ledger,
   LedgerSummary,
+  MonthlyLedgerSummary,
   ParticipantPair,
 } from './types'
 
 const DEFAULT_PARTICIPANTS: ParticipantPair = ['Participant A', 'Participant B']
+type MonthlyBreakdownView = 'compact' | 'chart'
 
 function normalizeBasePath(basePath: string) {
   if (!basePath) {
@@ -215,6 +217,68 @@ function percentChipStyle(value: number) {
   }
 }
 
+function MonthlyPaidSplitChartCard({
+  monthSummary,
+  commonCurrency,
+  participantOptions,
+}: {
+  monthSummary: MonthlyLedgerSummary
+  commonCurrency: string
+  participantOptions: ParticipantPair
+}) {
+  const colors = ['#1d6f55', '#c9822b']
+  const paidTotal = participantOptions.reduce(
+    (total, participant) => total + (monthSummary.participantSnapshots[participant]?.paid ?? 0),
+    0,
+  )
+  const firstParticipantPaid = monthSummary.participantSnapshots[participantOptions[0]]?.paid ?? 0
+  const firstParticipantDegrees = paidTotal > 0 ? Math.max(0, Math.min(360, (firstParticipantPaid / paidTotal) * 360)) : 0
+  const pieBackground =
+    paidTotal > 0
+      ? `conic-gradient(${colors[0]} 0deg ${firstParticipantDegrees}deg, ${colors[1]} ${firstParticipantDegrees}deg 360deg)`
+      : 'conic-gradient(rgba(45, 43, 34, 0.14) 0deg 360deg)'
+  const monthLabel = formatMonthLabel(monthSummary.month)
+
+  return (
+    <article className="monthly-pie-card">
+      <div className="monthly-pie-heading">
+        <span className="stat-label">Month</span>
+        <h3>{monthLabel}</h3>
+      </div>
+      <div
+        className="monthly-pie-chart"
+        style={{ background: pieBackground }}
+        role="img"
+        aria-label={`${monthLabel} paid split chart totaling ${formatCurrency(monthSummary.totalSpend, commonCurrency)}`}
+      >
+        <div className="monthly-pie-center">
+          <span className="stat-label">Total</span>
+          <strong>{formatCurrency(monthSummary.totalSpend, commonCurrency)}</strong>
+        </div>
+      </div>
+
+      <div className="monthly-pie-legend">
+        {participantOptions.map((participant, index) => {
+          const paid = monthSummary.participantSnapshots[participant]?.paid ?? 0
+          const paidRate = paidTotal > 0 ? (paid / paidTotal) * 100 : 0
+
+          return (
+            <div key={participant} className="monthly-pie-legend-row">
+              <span className="monthly-pie-swatch" style={{ background: colors[index] }} />
+              <div>
+                <strong>{participant}</strong>
+                <p className="muted tiny">
+                  {formatCurrency(paid, commonCurrency)} paid · {formatContributionRate(paidRate)}
+                </p>
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </article>
+  )
+}
+
 function DatePickerField({
   value,
   onChange,
@@ -298,6 +362,7 @@ function App() {
   const [summary, setSummary] = useState<LedgerSummary | null>(null)
   const [summaryLoading, setSummaryLoading] = useState(false)
   const [summaryError, setSummaryError] = useState<string | null>(null)
+  const [monthlyBreakdownView, setMonthlyBreakdownView] = useState<MonthlyBreakdownView>('compact')
 
   const [form, setForm] = useState<ExpenseFormState>(() => makeEmptyForm(DEFAULT_PARTICIPANTS[0]))
   const [formOpen, setFormOpen] = useState(false)
@@ -920,65 +985,101 @@ function App() {
           {loadError && <p className="status-line error">{loadError}</p>}
           {summaryError && <p className="status-line error">{summaryError}</p>}
 
-          <div className="monthly-breakdown">
-            <div className="section-head">
-              <h2>Monthly Contribution Rate</h2>
-              <p className="muted tiny">Effective contribution is derived from each participant’s paid total and that month’s ledger tally.</p>
+          <div className="monthly-breakdown" data-view={monthlyBreakdownView}>
+            <div className="section-head monthly-section-head">
+              <div>
+                <h2>Monthly Contribution Rate</h2>
+                <p className="muted tiny">Effective contribution is derived from each participant’s paid total and that month’s ledger tally.</p>
+              </div>
+              {summary && summary.monthlySummaries.length > 0 && (
+                <div className="monthly-view-actions">
+                  {monthlyBreakdownView === 'compact' ? (
+                    <button
+                      type="button"
+                      className="secondary-button monthly-action-alternative"
+                      onClick={() => setMonthlyBreakdownView('chart')}
+                    >
+                      Alternative View
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      onClick={() => setMonthlyBreakdownView('compact')}
+                    >
+                      Consolidated View
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
 
             {summary && summary.monthlySummaries.length > 0 ? (
-              <div className="monthly-grid">
-                {summary.monthlySummaries.map((monthSummary) => (
-                  <article key={monthSummary.month} className="month-card">
-                    <div className="month-card-head">
-                      <div>
-                        <span className="stat-label">Month</span>
-                        <h3>{formatMonthLabel(monthSummary.month)}</h3>
+              monthlyBreakdownView === 'chart' ? (
+                <div className="monthly-pie-grid">
+                  {summary.monthlySummaries.map((monthSummary) => (
+                    <MonthlyPaidSplitChartCard
+                      key={monthSummary.month}
+                      monthSummary={monthSummary}
+                      commonCurrency={summary.commonCurrency}
+                      participantOptions={participantOptions}
+                    />
+                  ))}
+                </div>
+              ) : (
+                <div className="monthly-grid">
+                  {summary.monthlySummaries.map((monthSummary) => (
+                    <article key={monthSummary.month} className="month-card">
+                      <div className="month-card-head">
+                        <div>
+                          <span className="stat-label">Month</span>
+                          <h3>{formatMonthLabel(monthSummary.month)}</h3>
+                        </div>
+                        <div className="month-total">
+                          <span className="stat-label">Total Spend</span>
+                          <strong>{formatCurrency(monthSummary.totalSpend, summary.commonCurrency)}</strong>
+                        </div>
                       </div>
-                      <div className="month-total">
-                        <span className="stat-label">Total Spend</span>
-                        <strong>{formatCurrency(monthSummary.totalSpend, summary.commonCurrency)}</strong>
+
+                      <div className="month-settlement">
+                        <span className="stat-label">Ledger Tally</span>
+                        <strong>
+                          {monthSummary.settlement
+                            ? formatCurrency(monthSummary.settlement.amount, summary.commonCurrency)
+                            : formatCurrency(0, summary.commonCurrency)}
+                        </strong>
+                        <span className="stat-footnote">
+                          {monthSummary.settlement
+                            ? `${monthSummary.settlement.debtor} -> ${monthSummary.settlement.creditor}`
+                            : 'Settled'}
+                        </span>
                       </div>
-                    </div>
 
-                    <div className="month-settlement">
-                      <span className="stat-label">Ledger Tally</span>
-                      <strong>
-                        {monthSummary.settlement
-                          ? formatCurrency(monthSummary.settlement.amount, summary.commonCurrency)
-                          : formatCurrency(0, summary.commonCurrency)}
-                      </strong>
-                      <span className="stat-footnote">
-                        {monthSummary.settlement
-                          ? `${monthSummary.settlement.debtor} -> ${monthSummary.settlement.creditor}`
-                          : 'Settled'}
-                      </span>
-                    </div>
-
-                    <div className="month-participants">
-                      {participantOptions.map((participant) => {
-                        const snapshot = monthSummary.participantSnapshots[participant]
-                        return (
-                          <div key={participant} className="month-participant-row">
-                            <div>
-                              <strong>{participant}</strong>
-                              <p className="muted tiny">
-                                Paid {formatCurrency(snapshot?.paid ?? 0, summary.commonCurrency)}
-                              </p>
+                      <div className="month-participants">
+                        {participantOptions.map((participant) => {
+                          const snapshot = monthSummary.participantSnapshots[participant]
+                          return (
+                            <div key={participant} className="month-participant-row">
+                              <div>
+                                <strong>{participant}</strong>
+                                <p className="muted tiny">
+                                  Paid {formatCurrency(snapshot?.paid ?? 0, summary.commonCurrency)}
+                                </p>
+                              </div>
+                              <div className="month-participant-values">
+                                <strong>
+                                  {formatCurrency(snapshot?.effectiveContribution ?? 0, summary.commonCurrency)}
+                                </strong>
+                                <span>{formatContributionRate(snapshot?.effectiveRate ?? 0)}</span>
+                              </div>
                             </div>
-                            <div className="month-participant-values">
-                              <strong>
-                                {formatCurrency(snapshot?.effectiveContribution ?? 0, summary.commonCurrency)}
-                              </strong>
-                              <span>{formatContributionRate(snapshot?.effectiveRate ?? 0)}</span>
-                            </div>
-                          </div>
-                        )
-                      })}
-                    </div>
-                  </article>
-                ))}
-              </div>
+                          )
+                        })}
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              )
             ) : (
               <p className="status-line">Monthly contribution rates will appear once expenses are added.</p>
             )}
