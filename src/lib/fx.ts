@@ -316,7 +316,7 @@ export async function computeLedgerSummary(
   )
   const settlement = settlementFromNet(settlementNetByParticipant)
   const monthlySummaries: MonthlyLedgerSummary[] = [...monthlyBucketMap.entries()]
-    .sort(([a], [b]) => a.localeCompare(b))
+    .sort(([a], [b]) => b.localeCompare(a))
     .map(([month, bucket]) => ({
       month,
       totalSpend: roundCurrency(bucket.totalSpend),
