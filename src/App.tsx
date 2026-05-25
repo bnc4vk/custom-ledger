@@ -366,6 +366,7 @@ function App() {
 
   const [form, setForm] = useState<ExpenseFormState>(() => makeEmptyForm(DEFAULT_PARTICIPANTS[0]))
   const [formOpen, setFormOpen] = useState(false)
+  const [defaultSplitOpen, setDefaultSplitOpen] = useState(false)
   const [renamingParticipantIndex, setRenamingParticipantIndex] = useState<number | null>(null)
   const [editingExpenseId, setEditingExpenseId] = useState<string | null>(null)
   const [submitBusy, setSubmitBusy] = useState(false)
@@ -811,6 +812,11 @@ function App() {
     [editingExpenseId, expenses],
   )
 
+  const monthlySummariesOldestFirst = useMemo(
+    () => [...(summary?.monthlySummaries ?? [])].sort((a, b) => a.month.localeCompare(b.month)),
+    [summary],
+  )
+
   if (isLandingRoute) {
     return (
       <div className="app-shell">
@@ -907,39 +913,6 @@ function App() {
         </header>
 
         <section className="panel summary-panel">
-          <div className="default-split-bar">
-            <div className="section-head">
-              <h2>Default Ownership Split</h2>
-              <p className="muted tiny">Used for new expenses when “Owed share %” is left blank.</p>
-            </div>
-            <div className="default-split-controls">
-              <label>
-                <span>Default ownership split %</span>
-                <input
-                  type="text"
-                  inputMode="decimal"
-                  value={defaultOwedPercentInput}
-                  onChange={(event) => setDefaultOwedPercentInput(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter') {
-                      event.preventDefault()
-                      void handleSaveDefaultOwedPercent()
-                    }
-                  }}
-                />
-              </label>
-              <button
-                type="button"
-                className="secondary-button"
-                onClick={() => void handleSaveDefaultOwedPercent()}
-                disabled={defaultOwedPercentSaving}
-              >
-                {defaultOwedPercentSaving ? 'Saving…' : 'Save Default'}
-              </button>
-            </div>
-            {defaultOwedPercentError && <p className="status-line error">{defaultOwedPercentError}</p>}
-          </div>
-
           <div className="settlement-spotlight">
             <span className="stat-label">Settlement</span>
             <strong className="spotlight-amount">
@@ -954,32 +927,6 @@ function App() {
             </span>
           </div>
 
-          <div className="summary-grid">
-            <article className="stat-card">
-              <span className="stat-label">Total Spend</span>
-              <strong>
-                {formatCurrency(summary?.ledgerTotal ?? 0, summary?.commonCurrency ?? 'USD')}
-              </strong>
-              <span className="stat-footnote">Converted into the ledger display currency.</span>
-            </article>
-            {participantOptions.map((participant) => {
-              const snapshot = summary?.participantContributionSnapshots[participant]
-              const commonCurrency = summary?.commonCurrency ?? 'USD'
-
-              return (
-                <article key={participant} className="stat-card">
-                  <span className="stat-label">{participant}</span>
-                  <strong>
-                    {formatCurrency(snapshot?.effectiveContribution ?? 0, commonCurrency)}
-                  </strong>
-                  <span className="stat-footnote">
-                    Effective rate {formatContributionRate(snapshot?.effectiveRate ?? 0)}
-                  </span>
-                </article>
-              )
-            })}
-          </div>
-
           {(loadingExpenses || summaryLoading) && <p className="status-line">Calculating totals…</p>}
           {ledgerError && <p className="status-line error">{ledgerError}</p>}
           {loadError && <p className="status-line error">{loadError}</p>}
@@ -988,10 +935,9 @@ function App() {
           <div className="monthly-breakdown" data-view={monthlyBreakdownView}>
             <div className="section-head monthly-section-head">
               <div>
-                <h2>Monthly Contribution Rate</h2>
-                <p className="muted tiny">Effective contribution is derived from each participant’s paid total and that month’s ledger tally.</p>
+                <h2>Ledger Settlement by Month</h2>
               </div>
-              {summary && summary.monthlySummaries.length > 0 && (
+              {summary && monthlySummariesOldestFirst.length > 0 && (
                 <div className="monthly-view-actions">
                   {monthlyBreakdownView === 'compact' ? (
                     <button
@@ -1014,10 +960,10 @@ function App() {
               )}
             </div>
 
-            {summary && summary.monthlySummaries.length > 0 ? (
+            {summary && monthlySummariesOldestFirst.length > 0 ? (
               monthlyBreakdownView === 'chart' ? (
                 <div className="monthly-pie-grid">
-                  {summary.monthlySummaries.map((monthSummary) => (
+                  {monthlySummariesOldestFirst.map((monthSummary) => (
                     <MonthlyPaidSplitChartCard
                       key={monthSummary.month}
                       monthSummary={monthSummary}
@@ -1028,7 +974,7 @@ function App() {
                 </div>
               ) : (
                 <div className="monthly-grid">
-                  {summary.monthlySummaries.map((monthSummary) => (
+                  {monthlySummariesOldestFirst.map((monthSummary) => (
                     <article key={monthSummary.month} className="month-card">
                       <div className="month-card-head">
                         <div>
@@ -1081,9 +1027,50 @@ function App() {
                 </div>
               )
             ) : (
-              <p className="status-line">Monthly contribution rates will appear once expenses are added.</p>
+              <p className="status-line">Monthly settlements will appear once expenses are added.</p>
             )}
           </div>
+        </section>
+
+        <section className={`panel default-split-panel ${defaultSplitOpen ? 'open' : 'collapsed'}`}>
+          <div className="section-head">
+            <h2>Default Ownership Split</h2>
+            <p className="muted tiny">Used for new expenses when “Owed share %” is left blank.</p>
+          </div>
+          <button type="button" className="secondary-button" onClick={() => setDefaultSplitOpen((current) => !current)}>
+            {defaultSplitOpen ? 'Hide' : 'Edit Default'}
+          </button>
+
+          {defaultSplitOpen && (
+            <>
+              <div className="default-split-controls">
+                <label>
+                  <span>Default ownership split %</span>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={defaultOwedPercentInput}
+                    onChange={(event) => setDefaultOwedPercentInput(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') {
+                        event.preventDefault()
+                        void handleSaveDefaultOwedPercent()
+                      }
+                    }}
+                  />
+                </label>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => void handleSaveDefaultOwedPercent()}
+                  disabled={defaultOwedPercentSaving}
+                >
+                  {defaultOwedPercentSaving ? 'Saving…' : 'Save Default'}
+                </button>
+              </div>
+              {defaultOwedPercentError && <p className="status-line error">{defaultOwedPercentError}</p>}
+            </>
+          )}
         </section>
 
         <section className={`panel form-panel ${formOpen || editingExpense ? 'open' : 'collapsed'}`}>

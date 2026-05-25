@@ -133,15 +133,6 @@
   gap: 0.8rem;
 }
 
-.default-split-bar {
-  display: grid;
-  gap: 0.75rem;
-  padding: 0.85rem 0.9rem;
-  border: 1px solid var(--line);
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.5);
-}
-
 .default-split-controls {
   display: flex;
   flex-wrap: wrap;
@@ -199,12 +190,6 @@
   color: var(--ink-muted);
   font-weight: 700;
   font-size: 0.9rem;
-}
-
-.summary-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 0.75rem;
 }
 
 .monthly-breakdown {
@@ -442,6 +427,7 @@
 }
 
 .participant-config h2,
+.default-split-panel h2,
 .form-panel h2,
 .ledger-column h2,
 .unmapped-panel h2,
@@ -528,6 +514,7 @@ textarea:focus {
   margin-top: 0.25rem;
 }
 
+.default-split-panel,
 .form-panel {
   padding: 1rem;
   display: grid;
@@ -536,19 +523,23 @@ textarea:focus {
   z-index: 5;
 }
 
+.default-split-panel.collapsed,
 .form-panel.collapsed {
   grid-template-columns: 1fr auto;
   align-items: center;
 }
 
+.default-split-panel.collapsed .section-head,
 .form-panel.collapsed .section-head {
   gap: 0;
 }
 
+.default-split-panel.collapsed .section-head .muted,
 .form-panel.collapsed .section-head .muted {
   display: none;
 }
 
+.default-split-panel.open,
 .form-panel.open {
   grid-template-columns: 1fr;
   align-items: initial;
@@ -903,10 +894,6 @@ code {
 }
 
 @media (max-width: 960px) {
-  .summary-grid {
-    grid-template-columns: 1fr;
-  }
-
   .form-row {
     grid-template-columns: 1fr;
   }
@@ -915,6 +902,7 @@ code {
     grid-template-columns: 1fr;
   }
 
+  .default-split-panel.collapsed,
   .form-panel.collapsed {
     grid-template-columns: 1fr;
     align-items: initial;
