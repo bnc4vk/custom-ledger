@@ -102,6 +102,7 @@ export interface MonthlyLedgerSummary {
   month: string
   totalSpend: number
   participantSnapshots: Record<string, ParticipantContributionSnapshot>
+  paidOnBehalfTotals: Record<string, number>
   settlement: SettlementSummary | null
 }
 

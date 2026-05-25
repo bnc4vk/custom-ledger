@@ -227,14 +227,17 @@ function MonthlyPaidSplitChartCard({
   participantOptions: ParticipantPair
 }) {
   const colors = ['#1d6f55', '#c9822b']
-  const paidTotal = participantOptions.reduce(
-    (total, participant) => total + (monthSummary.participantSnapshots[participant]?.paid ?? 0),
+  const paidOnBehalfTotal = participantOptions.reduce(
+    (total, participant) => total + (monthSummary.paidOnBehalfTotals[participant] ?? 0),
     0,
   )
-  const firstParticipantPaid = monthSummary.participantSnapshots[participantOptions[0]]?.paid ?? 0
-  const firstParticipantDegrees = paidTotal > 0 ? Math.max(0, Math.min(360, (firstParticipantPaid / paidTotal) * 360)) : 0
+  const firstParticipantPaidOnBehalf = monthSummary.paidOnBehalfTotals[participantOptions[0]] ?? 0
+  const firstParticipantDegrees =
+    paidOnBehalfTotal > 0
+      ? Math.max(0, Math.min(360, (firstParticipantPaidOnBehalf / paidOnBehalfTotal) * 360))
+      : 0
   const pieBackground =
-    paidTotal > 0
+    paidOnBehalfTotal > 0
       ? `conic-gradient(${colors[0]} 0deg ${firstParticipantDegrees}deg, ${colors[1]} ${firstParticipantDegrees}deg 360deg)`
       : 'conic-gradient(rgba(45, 43, 34, 0.14) 0deg 360deg)'
   const monthLabel = formatMonthLabel(monthSummary.month)
@@ -249,18 +252,18 @@ function MonthlyPaidSplitChartCard({
         className="monthly-pie-chart"
         style={{ background: pieBackground }}
         role="img"
-        aria-label={`${monthLabel} paid split chart totaling ${formatCurrency(monthSummary.totalSpend, commonCurrency)}`}
+        aria-label={`${monthLabel} paid-on-behalf chart totaling ${formatCurrency(paidOnBehalfTotal, commonCurrency)}`}
       >
         <div className="monthly-pie-center">
           <span className="stat-label">Total</span>
-          <strong>{formatCurrency(monthSummary.totalSpend, commonCurrency)}</strong>
+          <strong>{formatCurrency(paidOnBehalfTotal, commonCurrency)}</strong>
         </div>
       </div>
 
       <div className="monthly-pie-legend">
         {participantOptions.map((participant, index) => {
-          const paid = monthSummary.participantSnapshots[participant]?.paid ?? 0
-          const paidRate = paidTotal > 0 ? (paid / paidTotal) * 100 : 0
+          const paidOnBehalf = monthSummary.paidOnBehalfTotals[participant] ?? 0
+          const paidOnBehalfRate = paidOnBehalfTotal > 0 ? (paidOnBehalf / paidOnBehalfTotal) * 100 : 0
 
           return (
             <div key={participant} className="monthly-pie-legend-row">
@@ -268,7 +271,8 @@ function MonthlyPaidSplitChartCard({
               <div>
                 <strong>{participant}</strong>
                 <p className="muted tiny">
-                  {formatCurrency(paid, commonCurrency)} paid · {formatContributionRate(paidRate)}
+                  {formatCurrency(paidOnBehalf, commonCurrency)} on behalf ·{' '}
+                  {formatContributionRate(paidOnBehalfRate)}
                 </p>
               </div>
             </div>

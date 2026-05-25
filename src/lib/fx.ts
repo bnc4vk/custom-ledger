@@ -214,6 +214,7 @@ export async function computeLedgerSummary(
       totalSpend: number
       participantTotals: Record<string, number>
       effectiveContributionTotals: Record<string, number>
+      paidOnBehalfTotals: Record<string, number>
       settlementNetByParticipant: Record<string, number>
     }
   >()
@@ -269,6 +270,9 @@ export async function computeLedgerSummary(
             effectiveContributionTotals: Object.fromEntries(
               settlementParticipants.map((name) => [name, 0]),
             ) as Record<string, number>,
+            paidOnBehalfTotals: Object.fromEntries(
+              settlementParticipants.map((name) => [name, 0]),
+            ) as Record<string, number>,
             settlementNetByParticipant: Object.fromEntries(
               settlementParticipants.map((name) => [name, 0]),
             ) as Record<string, number>,
@@ -282,6 +286,7 @@ export async function computeLedgerSummary(
         bucket.effectiveContributionTotals[otherParticipant] = roundCurrency(
           bucket.effectiveContributionTotals[otherParticipant] + otherContribution,
         )
+        bucket.paidOnBehalfTotals[payer] = roundCurrency(bucket.paidOnBehalfTotals[payer] + credit)
         bucket.settlementNetByParticipant[payer] = roundCurrency(bucket.settlementNetByParticipant[payer] + credit)
         bucket.settlementNetByParticipant[otherParticipant] = roundCurrency(
           bucket.settlementNetByParticipant[otherParticipant] - credit,
@@ -324,6 +329,9 @@ export async function computeLedgerSummary(
         bucket.participantTotals,
         bucket.effectiveContributionTotals,
         bucket.totalSpend,
+      ),
+      paidOnBehalfTotals: Object.fromEntries(
+        Object.entries(bucket.paidOnBehalfTotals).map(([participant, total]) => [participant, roundCurrency(total)]),
       ),
       settlement: settlementFromNet(bucket.settlementNetByParticipant),
     }))

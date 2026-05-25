@@ -947,6 +947,12 @@ code {
     grid-template-columns: 1fr;
   }
 
+  .monthly-grid,
+  .monthly-pie-grid {
+    display: flex;
+    flex-direction: column-reverse;
+  }
+
   .month-card-head,
   .month-participant-row {
     flex-direction: column;
