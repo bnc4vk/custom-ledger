@@ -3,9 +3,11 @@
 A minimal shared-expense ledger web app (React + Vite) with:
 
 - Link-based ledgers (`/custom-ledger/#/<share-code>`) generated on demand
+- Device-based generated-link history on the home page with no user profile required
 - Dedicated legacy ledger link for existing `Ryan` + `Ben` data (`/custom-ledger/#/ryan-ben`)
 - Two participant columns per ledger (editable in the UI)
 - Supabase-backed expense storage
+- Hidden audit log for ledger mutations
 - Historical FX conversion by expense date (via Frankfurter)
 - Settlement calculation with per-expense owed-share support
 - Mobile-friendly expense entry form
@@ -50,6 +52,8 @@ The app now uses:
 - `share_code` (unique text)
 - `participant_a` (text)
 - `participant_b` (text)
+- `created_by_device_id` (text, optional)
+- `updated_at` (timestamp)
 - `created_at` (timestamp)
 
 2. `expenses`
@@ -66,6 +70,15 @@ The app now uses:
 - `notes` (text, optional)
 - `created_at` (timestamp)
 
+3. `ledger_audit_events`
+
+- `id` (uuid)
+- `ledger_id` (uuid, foreign key to `ledgers.id`)
+- `actor_device_id` (text, optional)
+- `event_type` (text)
+- `event_data` (jsonb)
+- `created_at` (timestamp)
+
 ## Calculation behavior
 
 - The app chooses a **common display currency** based on the currency bucket with the highest total estimated value (using historical USD conversions per expense date).
@@ -80,6 +93,8 @@ The app now uses:
 
 - Receipt extraction uses free OCR with heuristics (merchant/date/amount/currency parsing). It will not be perfect; review and edit before saving.
 - Participant labels are stored per-ledger in Supabase (`ledgers.participant_a` / `participant_b`) and shared across anyone using the same link.
+- Generated-link history is keyed by a random device id in browser local storage. Clearing browser storage or switching devices will hide the local history, but saved ledger URLs still work.
+- The audit log records successful app-level mutations. With the current anonymous browser write model, it is useful for visibility rather than tamper-proof compliance.
 - For production use, tighten Supabase Row Level Security policies.
 
 ## One-time corrections for the sample data

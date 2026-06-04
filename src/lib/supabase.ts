@@ -1,5 +1,14 @@
 import { createClient } from '@supabase/supabase-js'
-import type { Expense, ExpenseInsert, ExpenseRow, Ledger, LedgerRow, ParticipantPair } from '../types'
+import type {
+  AuditEvent,
+  AuditEventRow,
+  Expense,
+  ExpenseInsert,
+  ExpenseRow,
+  Ledger,
+  LedgerRow,
+  ParticipantPair,
+} from '../types'
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
 const supabasePublishableKey =
@@ -24,6 +33,9 @@ function mapSupabaseErrorMessage(message: string) {
     normalized.includes("'is_shared' column") ||
     normalized.includes("'owed_percent' column") ||
     normalized.includes("'default_owed_percent' column") ||
+    normalized.includes("'created_by_device_id' column") ||
+    normalized.includes("'updated_at' column") ||
+    normalized.includes('relation "ledger_audit_events" does not exist') ||
     normalized.includes("'ledger_id' column") ||
     normalized.includes("'share_code' column") ||
     normalized.includes('relation "ledgers" does not exist') ||
@@ -59,7 +71,9 @@ function mapLedger(row: LedgerRow): Ledger {
     participants: [row.participant_a, row.participant_b],
     defaultOwedPercent:
       rawDefaultOwedPercent != null && Number.isFinite(rawDefaultOwedPercent) ? rawDefaultOwedPercent : 100,
+    createdByDeviceId: row.created_by_device_id ?? null,
     createdAt: row.created_at,
+    updatedAt: row.updated_at ?? row.created_at,
   }
 }
 
@@ -84,6 +98,17 @@ function mapExpense(row: ExpenseRow): Expense {
     owedPercent,
     merchant: row.merchant,
     notes: row.notes,
+    createdAt: row.created_at,
+  }
+}
+
+function mapAuditEvent(row: AuditEventRow): AuditEvent {
+  return {
+    id: row.id,
+    ledgerId: row.ledger_id,
+    actorDeviceId: row.actor_device_id,
+    eventType: row.event_type,
+    eventData: row.event_data ?? {},
     createdAt: row.created_at,
   }
 }
@@ -161,7 +186,7 @@ export async function ensureLegacyLedger(): Promise<Ledger> {
   return mapLedger(data as LedgerRow)
 }
 
-export async function createLedger(participants: ParticipantPair): Promise<Ledger> {
+export async function createLedger(participants: ParticipantPair, deviceId?: string): Promise<Ledger> {
   const client = requireClient()
   const normalizedParticipants: ParticipantPair = [
     participants[0].trim() || 'Participant A',
@@ -174,6 +199,7 @@ export async function createLedger(participants: ParticipantPair): Promise<Ledge
       participant_a: normalizedParticipants[0],
       participant_b: normalizedParticipants[1],
       default_owed_percent: 100,
+      created_by_device_id: deviceId ?? null,
     }
 
     const { data, error } = await client.from('ledgers').insert(payload).select('*').single()
@@ -192,6 +218,21 @@ export async function createLedger(participants: ParticipantPair): Promise<Ledge
   throw new Error('Could not generate a unique ledger link. Try again.')
 }
 
+export async function fetchLedgersByDeviceId(deviceId: string): Promise<Ledger[]> {
+  const client = requireClient()
+  const { data, error } = await client
+    .from('ledgers')
+    .select('*')
+    .eq('created_by_device_id', deviceId)
+    .order('created_at', { ascending: false })
+
+  if (error) {
+    throw new Error(mapSupabaseErrorMessage(error.message))
+  }
+
+  return (data as LedgerRow[]).map(mapLedger)
+}
+
 export async function updateLedgerParticipants(ledgerId: string, participants: ParticipantPair): Promise<Ledger> {
   const client = requireClient()
   const payload = {
@@ -201,7 +242,7 @@ export async function updateLedgerParticipants(ledgerId: string, participants: P
 
   const { data, error } = await client
     .from('ledgers')
-    .update(payload)
+    .update({ ...payload, updated_at: new Date().toISOString() })
     .eq('id', ledgerId)
     .select('*')
     .single()
@@ -218,7 +259,7 @@ export async function updateLedgerDefaultOwedPercent(ledgerId: string, defaultOw
 
   const { data, error } = await client
     .from('ledgers')
-    .update({ default_owed_percent: defaultOwedPercent })
+    .update({ default_owed_percent: defaultOwedPercent, updated_at: new Date().toISOString() })
     .eq('id', ledgerId)
     .select('*')
     .single()
@@ -308,4 +349,52 @@ export async function deleteExpense(ledgerId: string, id: string): Promise<void>
   if (error) {
     throw new Error(mapSupabaseErrorMessage(error.message))
   }
+}
+
+export async function touchLedger(ledgerId: string): Promise<void> {
+  const client = requireClient()
+  const { error } = await client.from('ledgers').update({ updated_at: new Date().toISOString() }).eq('id', ledgerId)
+
+  if (error) {
+    throw new Error(mapSupabaseErrorMessage(error.message))
+  }
+}
+
+export async function appendAuditEvent(
+  ledgerId: string,
+  eventType: string,
+  deviceId: string | null,
+  eventData: Record<string, unknown> = {},
+): Promise<AuditEvent> {
+  const client = requireClient()
+  const payload = {
+    ledger_id: ledgerId,
+    actor_device_id: deviceId,
+    event_type: eventType,
+    event_data: eventData,
+  }
+
+  const { data, error } = await client.from('ledger_audit_events').insert(payload).select('*').single()
+
+  if (error) {
+    throw new Error(mapSupabaseErrorMessage(error.message))
+  }
+
+  return mapAuditEvent(data as AuditEventRow)
+}
+
+export async function fetchAuditEvents(ledgerId: string): Promise<AuditEvent[]> {
+  const client = requireClient()
+  const { data, error } = await client
+    .from('ledger_audit_events')
+    .select('*')
+    .eq('ledger_id', ledgerId)
+    .order('created_at', { ascending: false })
+    .limit(100)
+
+  if (error) {
+    throw new Error(mapSupabaseErrorMessage(error.message))
+  }
+
+  return (data as AuditEventRow[]).map(mapAuditEvent)
 }

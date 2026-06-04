@@ -1,23 +1,29 @@
 import { format, isValid, parseISO } from 'date-fns'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { DayPicker } from 'react-day-picker'
 import './App.css'
 import { computeLedgerSummary } from './lib/fx'
 import { extractExpenseFromImage } from './lib/receipt'
+import { formatDeviceId, getOrCreateDeviceId } from './lib/device'
 import {
   LEGACY_LEDGER_SHARE_CODE,
+  appendAuditEvent,
   createExpense,
   createLedger,
   deleteExpense,
   ensureLegacyLedger,
+  fetchAuditEvents,
   fetchExpenses,
   fetchLedgerByShareCode,
+  fetchLedgersByDeviceId,
   isSupabaseConfigured,
+  touchLedger,
   updateExpense,
   updateLedgerDefaultOwedPercent,
   updateLedgerParticipants,
 } from './lib/supabase'
 import type {
+  AuditEvent,
   ConvertedExpense,
   Expense,
   ExpenseFormState,
@@ -204,6 +210,50 @@ function formatMonthLabel(month: string) {
   }
 }
 
+function formatDateTime(value: string) {
+  try {
+    const parsed = parseISO(value)
+    return isValid(parsed) ? format(parsed, 'MMM d, yyyy h:mm a') : value
+  } catch {
+    return value
+  }
+}
+
+function formatAuditEventType(eventType: string) {
+  return eventType
+    .split('_')
+    .filter(Boolean)
+    .map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
+    .join(' ')
+}
+
+function formatAuditEventDetail(event: AuditEvent) {
+  const data = event.eventData
+
+  switch (event.eventType) {
+    case 'ledger_created':
+      return `Ledger created for ${String(data.participantA ?? 'Participant A')} and ${String(
+        data.participantB ?? 'Participant B',
+      )}.`
+    case 'participants_updated':
+      return `Renamed participant ${String(data.index ?? '')} from ${String(data.previous ?? 'Unknown')} to ${String(
+        data.next ?? 'Unknown',
+      )}.`
+    case 'default_owed_percent_updated':
+      return `Default owed share changed from ${String(data.previous ?? 'Unknown')}% to ${String(
+        data.next ?? 'Unknown',
+      )}%.`
+    case 'expense_created':
+      return `Added ${String(data.description ?? 'an expense')} for ${String(data.participant ?? 'a participant')}.`
+    case 'expense_updated':
+      return `Updated ${String(data.description ?? 'an expense')}.`
+    case 'expense_deleted':
+      return `Deleted ${String(data.description ?? 'an expense')}.`
+    default:
+      return Object.keys(data).length > 0 ? JSON.stringify(data) : 'No additional details.'
+  }
+}
+
 function percentChipStyle(value: number) {
   const ratio = effectiveOwedPercent(value) / 100
   const bgAlpha = 0.05 + ratio * 0.18
@@ -346,9 +396,13 @@ function DatePickerField({
 function App() {
   const [routeShareCode, setRouteShareCode] = useState<string | null>(() => readCurrentShareCode())
   const isLandingRoute = routeShareCode == null
+  const [deviceId] = useState(() => getOrCreateDeviceId())
 
   const [landingError, setLandingError] = useState<string | null>(null)
   const [creatingLedger, setCreatingLedger] = useState(false)
+  const [deviceLedgers, setDeviceLedgers] = useState<Ledger[]>([])
+  const [loadingDeviceLedgers, setLoadingDeviceLedgers] = useState(false)
+  const [deviceLedgerError, setDeviceLedgerError] = useState<string | null>(null)
 
   const [activeLedger, setActiveLedger] = useState<Ledger | null>(null)
   const [ledgerLoading, setLedgerLoading] = useState(!isLandingRoute)
@@ -362,6 +416,9 @@ function App() {
   const [expenses, setExpenses] = useState<Expense[]>([])
   const [loadingExpenses, setLoadingExpenses] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
+  const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([])
+  const [auditLoading, setAuditLoading] = useState(false)
+  const [auditError, setAuditError] = useState<string | null>(null)
 
   const [summary, setSummary] = useState<LedgerSummary | null>(null)
   const [summaryLoading, setSummaryLoading] = useState(false)
@@ -385,6 +442,55 @@ function App() {
 
   const participantOptions = participantNames
 
+  const loadDeviceLedgers = useCallback(async () => {
+    if (!isSupabaseConfigured) {
+      setDeviceLedgers([])
+      return
+    }
+
+    setLoadingDeviceLedgers(true)
+    setDeviceLedgerError(null)
+    try {
+      const rows = await fetchLedgersByDeviceId(deviceId)
+      setDeviceLedgers(rows)
+    } catch (error) {
+      setDeviceLedgers([])
+      setDeviceLedgerError(error instanceof Error ? error.message : 'Failed to load generated links')
+    } finally {
+      setLoadingDeviceLedgers(false)
+    }
+  }, [deviceId])
+
+  const refreshAuditEvents = useCallback(async (ledgerId: string) => {
+    if (!isSupabaseConfigured) {
+      return
+    }
+
+    setAuditLoading(true)
+    setAuditError(null)
+    try {
+      const rows = await fetchAuditEvents(ledgerId)
+      setAuditEvents(rows)
+    } catch (error) {
+      setAuditEvents([])
+      setAuditError(error instanceof Error ? error.message : 'Failed to load audit log')
+    } finally {
+      setAuditLoading(false)
+    }
+  }, [])
+
+  const recordAudit = useCallback(
+    async (ledgerId: string, eventType: string, eventData: Record<string, unknown> = {}) => {
+      try {
+        await appendAuditEvent(ledgerId, eventType, deviceId, eventData)
+        await refreshAuditEvents(ledgerId)
+      } catch (error) {
+        setAuditError(error instanceof Error ? error.message : 'Failed to record audit event')
+      }
+    },
+    [deviceId, refreshAuditEvents],
+  )
+
   useEffect(() => {
     function syncRoute() {
       setRouteShareCode(readCurrentShareCode())
@@ -398,6 +504,14 @@ function App() {
       window.removeEventListener('popstate', syncRoute)
     }
   }, [])
+
+  useEffect(() => {
+    if (!isLandingRoute) {
+      return
+    }
+
+    void loadDeviceLedgers()
+  }, [isLandingRoute, loadDeviceLedgers])
 
   useEffect(() => {
     const shareCode = routeShareCode
@@ -448,11 +562,13 @@ function App() {
           setDefaultOwedPercentError(null)
           setForm(makeEmptyForm(ledger.participants[0]))
           setExpenses(rows)
+          void refreshAuditEvents(ledger.id)
         }
       } catch (error) {
         if (!cancelled) {
           setActiveLedger(null)
           setExpenses([])
+          setAuditEvents([])
           setLedgerError(error instanceof Error ? error.message : 'Failed to load ledger')
         }
       } finally {
@@ -467,7 +583,7 @@ function App() {
     return () => {
       cancelled = true
     }
-  }, [isLandingRoute, routeShareCode])
+  }, [isLandingRoute, refreshAuditEvents, routeShareCode])
 
   useEffect(() => {
     setForm((current) => {
@@ -594,9 +710,29 @@ function App() {
     setSubmitBusy(true)
     try {
       if (editingExpenseId) {
-        await updateExpense(activeLedger.id, editingExpenseId, payload)
+        const updated = await updateExpense(activeLedger.id, editingExpenseId, payload)
+        await touchLedger(activeLedger.id)
+        await recordAudit(activeLedger.id, 'expense_updated', {
+          expenseId: updated.id,
+          description: updated.description,
+          participant: updated.participant,
+          amount: updated.amount,
+          currency: updated.currency,
+          incurredOn: updated.incurredOn,
+          owedPercent: updated.owedPercent,
+        })
       } else {
-        await createExpense(payload)
+        const created = await createExpense(payload)
+        await touchLedger(activeLedger.id)
+        await recordAudit(activeLedger.id, 'expense_created', {
+          expenseId: created.id,
+          description: created.description,
+          participant: created.participant,
+          amount: created.amount,
+          currency: created.currency,
+          incurredOn: created.incurredOn,
+          owedPercent: created.owedPercent,
+        })
       }
       setEditingExpenseId(null)
       setForm(makeEmptyForm(form.participant, payload.currency))
@@ -700,6 +836,16 @@ function App() {
 
     try {
       await deleteExpense(activeLedger.id, expense.id)
+      await touchLedger(activeLedger.id)
+      await recordAudit(activeLedger.id, 'expense_deleted', {
+        expenseId: expense.id,
+        description: expense.description,
+        participant: expense.participant,
+        amount: expense.amount,
+        currency: expense.currency,
+        incurredOn: expense.incurredOn,
+        owedPercent: expense.owedPercent,
+      })
 
       if (editingExpenseId === expense.id) {
         setEditingExpenseId(null)
@@ -725,10 +871,20 @@ function App() {
       return
     }
 
+    const previous = activeLedger.participants[index]
+    if (previous === next[index]) {
+      return
+    }
+
     try {
       const updated = await updateLedgerParticipants(activeLedger.id, next)
       setActiveLedger(updated)
       setParticipantNames(updated.participants)
+      await recordAudit(activeLedger.id, 'participants_updated', {
+        index: index + 1,
+        previous,
+        next: updated.participants[index],
+      })
     } catch (error) {
       setLoadError(error instanceof Error ? error.message : 'Failed to update participant names')
     }
@@ -761,6 +917,10 @@ function App() {
       setActiveLedger(updated)
       setDefaultOwedPercent(updated.defaultOwedPercent)
       setDefaultOwedPercentInput(formatPercentInputValue(updated.defaultOwedPercent))
+      await recordAudit(activeLedger.id, 'default_owed_percent_updated', {
+        previous: previousDefaultOwedPercent,
+        next: updated.defaultOwedPercent,
+      })
     } catch (error) {
       setDefaultOwedPercent(previousDefaultOwedPercent)
       setDefaultOwedPercentError(
@@ -781,7 +941,12 @@ function App() {
 
     setCreatingLedger(true)
     try {
-      const ledger = await createLedger(DEFAULT_PARTICIPANTS)
+      const ledger = await createLedger(DEFAULT_PARTICIPANTS, deviceId)
+      await appendAuditEvent(ledger.id, 'ledger_created', deviceId, {
+        participantA: ledger.participants[0],
+        participantB: ledger.participants[1],
+        shareCode: ledger.shareCode,
+      })
       window.location.assign(appLedgerPath(ledger.shareCode))
     } catch (error) {
       setLandingError(error instanceof Error ? error.message : 'Failed to generate link')
@@ -830,6 +995,7 @@ function App() {
               <p className="eyebrow">Ledger</p>
               <h1>Shared Ledger Links</h1>
               <p className="muted">Generate a dedicated ledger URL for any two-party expense tracking.</p>
+              <p className="muted tiny">Current device: {formatDeviceId(deviceId)}</p>
             </div>
           </header>
 
@@ -849,6 +1015,36 @@ function App() {
               </button>
             </div>
             {landingError && <p className="status-line error">{landingError}</p>}
+          </section>
+
+          <section className="panel device-links-panel">
+            <div className="section-head">
+              <h2>Your Generated Links</h2>
+              <p className="muted tiny">Saved for this browser using device id {formatDeviceId(deviceId)}.</p>
+            </div>
+
+            {loadingDeviceLedgers && <p className="status-line">Loading generated links…</p>}
+            {deviceLedgerError && <p className="status-line error">{deviceLedgerError}</p>}
+
+            {!loadingDeviceLedgers && deviceLedgers.length === 0 ? (
+              <p className="empty-state">Generated ledger links from this device will appear here.</p>
+            ) : (
+              <ul className="device-link-list">
+                {deviceLedgers.map((ledger) => (
+                  <li key={ledger.id} className="device-link-item">
+                    <div>
+                      <strong>{ledger.participants[0]} and {ledger.participants[1]} Ledger</strong>
+                      <p className="muted tiny">
+                        Created {formatDateTime(ledger.createdAt)} · Updated {formatDateTime(ledger.updatedAt)}
+                      </p>
+                    </div>
+                    <a className="secondary-button inline-link-button" href={appLedgerPath(ledger.shareCode)}>
+                      Open
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            )}
           </section>
 
           {!isSupabaseConfigured && (
@@ -1383,6 +1579,36 @@ function App() {
             </ul>
           </section>
         )}
+
+        <details className="panel audit-panel">
+          <summary>
+            <span>Audit Log</span>
+            <small>{auditEvents.length} events</small>
+          </summary>
+
+          <div className="audit-content">
+            {auditLoading && <p className="status-line">Loading audit log…</p>}
+            {auditError && <p className="status-line error">{auditError}</p>}
+            {!auditLoading && auditEvents.length === 0 ? (
+              <p className="empty-state">Ledger activity will appear here after changes are made.</p>
+            ) : (
+              <ol className="audit-list">
+                {auditEvents.map((event) => (
+                  <li key={event.id} className="audit-item">
+                    <div>
+                      <strong>{formatAuditEventType(event.eventType)}</strong>
+                      <p>{formatAuditEventDetail(event)}</p>
+                    </div>
+                    <div className="audit-meta">
+                      <span>{formatDateTime(event.createdAt)}</span>
+                      <span>{event.actorDeviceId ? formatDeviceId(event.actorDeviceId) : 'Unknown device'}</span>
+                    </div>
+                  </li>
+                ))}
+              </ol>
+            )}
+          </div>
+        </details>
       </main>
     </div>
   )

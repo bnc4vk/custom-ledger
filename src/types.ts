@@ -6,7 +6,9 @@ export interface LedgerRow {
   participant_a: string
   participant_b: string
   default_owed_percent?: number | string | null
+  created_by_device_id?: string | null
   created_at: string
+  updated_at?: string | null
 }
 
 export interface Ledger {
@@ -14,7 +16,9 @@ export interface Ledger {
   shareCode: string
   participants: ParticipantPair
   defaultOwedPercent: number
+  createdByDeviceId?: string | null
   createdAt: string
+  updatedAt: string
 }
 
 export interface ExpenseRow {
@@ -67,6 +71,24 @@ export interface ExpenseFormState {
   incurredOn: string
   owedPercent: string
   notes: string
+}
+
+export interface AuditEventRow {
+  id: string
+  ledger_id: string
+  actor_device_id: string | null
+  event_type: string
+  event_data: Record<string, unknown> | null
+  created_at: string
+}
+
+export interface AuditEvent {
+  id: string
+  ledgerId: string
+  actorDeviceId: string | null
+  eventType: string
+  eventData: Record<string, unknown>
+  createdAt: string
 }
 
 export interface ReceiptExtraction {
