@@ -17,6 +17,7 @@ import {
   fetchLedgerByShareCode,
   fetchLedgersByDeviceId,
   isSupabaseConfigured,
+  saveDeviceLedger,
   touchLedger,
   updateExpense,
   updateLedgerDefaultOwedPercent,
@@ -428,6 +429,7 @@ function App() {
   const [form, setForm] = useState<ExpenseFormState>(() => makeEmptyForm(DEFAULT_PARTICIPANTS[0]))
   const [formOpen, setFormOpen] = useState(false)
   const [defaultSplitOpen, setDefaultSplitOpen] = useState(false)
+  const [hiddenParticipantColumns, setHiddenParticipantColumns] = useState<[boolean, boolean]>([false, false])
   const [renamingParticipantIndex, setRenamingParticipantIndex] = useState<number | null>(null)
   const [editingExpenseId, setEditingExpenseId] = useState<string | null>(null)
   const [submitBusy, setSubmitBusy] = useState(false)
@@ -563,6 +565,11 @@ function App() {
           setForm(makeEmptyForm(ledger.participants[0]))
           setExpenses(rows)
           void refreshAuditEvents(ledger.id)
+          if (ledger.createdByDeviceId !== deviceId) {
+            void saveDeviceLedger(deviceId, ledger.id, 'visited').catch((error) => {
+              setLoadError(error instanceof Error ? error.message : 'Failed to save this ledger to the device list')
+            })
+          }
         }
       } catch (error) {
         if (!cancelled) {
@@ -583,7 +590,7 @@ function App() {
     return () => {
       cancelled = true
     }
-  }, [isLandingRoute, refreshAuditEvents, routeShareCode])
+  }, [deviceId, isLandingRoute, refreshAuditEvents, routeShareCode])
 
   useEffect(() => {
     setForm((current) => {
@@ -942,6 +949,7 @@ function App() {
     setCreatingLedger(true)
     try {
       const ledger = await createLedger(DEFAULT_PARTICIPANTS, deviceId)
+      await saveDeviceLedger(deviceId, ledger.id, 'created')
       await appendAuditEvent(ledger.id, 'ledger_created', deviceId, {
         participantA: ledger.participants[0],
         participantB: ledger.participants[1],
@@ -990,19 +998,10 @@ function App() {
     return (
       <div className="app-shell">
         <main className="ledger-app">
-          <header className="hero-card panel">
-            <div>
-              <p className="eyebrow">Ledger</p>
-              <h1>Shared Ledger Links</h1>
-              <p className="muted">Generate a dedicated ledger URL for any two-party expense tracking.</p>
-              <p className="muted tiny">Current device: {formatDeviceId(deviceId)}</p>
-            </div>
-          </header>
-
-          <section className="panel landing-panel">
+          <section className="panel landing-panel home-create-panel">
             <div className="section-head">
               <h2>Create New Shared Ledger</h2>
-              <p className="muted tiny">Each generated link gets its own isolated expenses and participant names.</p>
+              <p className="muted">Generate a dedicated ledger URL with isolated expenses and participant names.</p>
             </div>
             <div className="landing-actions">
               <button
@@ -1019,32 +1018,28 @@ function App() {
 
           <section className="panel device-links-panel">
             <div className="section-head">
-              <h2>Your Generated Links</h2>
-              <p className="muted tiny">Saved for this browser using device id {formatDeviceId(deviceId)}.</p>
+              <h2>Saved Ledgers</h2>
             </div>
 
             {loadingDeviceLedgers && <p className="status-line">Loading generated links…</p>}
             {deviceLedgerError && <p className="status-line error">{deviceLedgerError}</p>}
 
             {!loadingDeviceLedgers && deviceLedgers.length === 0 ? (
-              <p className="empty-state">Generated ledger links from this device will appear here.</p>
+              <p className="empty-state">Saved ledger links from this device and browser will appear here.</p>
             ) : (
               <ul className="device-link-list">
                 {deviceLedgers.map((ledger) => (
                   <li key={ledger.id} className="device-link-item">
-                    <div>
-                      <strong>{ledger.participants[0]} and {ledger.participants[1]} Ledger</strong>
-                      <p className="muted tiny">
-                        Created {formatDateTime(ledger.createdAt)} · Updated {formatDateTime(ledger.updatedAt)}
-                      </p>
-                    </div>
-                    <a className="secondary-button inline-link-button" href={appLedgerPath(ledger.shareCode)}>
-                      Open
+                    <a className="saved-ledger-link" href={appLedgerPath(ledger.shareCode)}>
+                      {ledger.participants[0]} and {ledger.participants[1]} Ledger
                     </a>
                   </li>
                 ))}
               </ul>
             )}
+            <p className="muted tiny saved-ledgers-disclaimer">
+              This list is saved by device and browser. Saved URLs still work if this browser history is cleared.
+            </p>
           </section>
 
           {!isSupabaseConfigured && (
@@ -1445,6 +1440,7 @@ function App() {
             const participantExpenses = groupedExpenses.groups[participant] ?? []
             const participantTotal = summary?.participantTotals[participant] ?? 0
             const commonCurrency = summary?.commonCurrency ?? 'USD'
+            const columnHidden = hiddenParticipantColumns[participantIndex]
 
             return (
               <section key={participant} className="panel ledger-column">
@@ -1485,10 +1481,27 @@ function App() {
                     )}
                     <p className="muted tiny">{participantExpenses.length} items</p>
                   </div>
-                  <strong>{formatCurrency(participantTotal, commonCurrency)}</strong>
+                  <div className="column-actions">
+                    <strong>{formatCurrency(participantTotal, commonCurrency)}</strong>
+                    <button
+                      type="button"
+                      className="mini-button"
+                      onClick={() =>
+                        setHiddenParticipantColumns((current) => {
+                          const next = [...current] as [boolean, boolean]
+                          next[participantIndex] = !next[participantIndex]
+                          return next
+                        })
+                      }
+                    >
+                      {columnHidden ? 'Show Expenses' : 'Hide Expenses'}
+                    </button>
+                  </div>
                 </div>
 
-                {participantExpenses.length === 0 ? (
+                {columnHidden ? (
+                  <p className="empty-state">Expenses hidden.</p>
+                ) : participantExpenses.length === 0 ? (
                   <p className="empty-state">No expenses yet.</p>
                 ) : (
                   <ul className="expense-list">

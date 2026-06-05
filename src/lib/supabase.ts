@@ -2,6 +2,7 @@ import { createClient } from '@supabase/supabase-js'
 import type {
   AuditEvent,
   AuditEventRow,
+  DeviceLedgerRelationship,
   Expense,
   ExpenseInsert,
   ExpenseRow,
@@ -36,6 +37,7 @@ function mapSupabaseErrorMessage(message: string) {
     normalized.includes("'created_by_device_id' column") ||
     normalized.includes("'updated_at' column") ||
     normalized.includes('relation "ledger_audit_events" does not exist') ||
+    normalized.includes('relation "device_ledgers" does not exist') ||
     normalized.includes("'ledger_id' column") ||
     normalized.includes("'share_code' column") ||
     normalized.includes('relation "ledgers" does not exist') ||
@@ -218,19 +220,85 @@ export async function createLedger(participants: ParticipantPair, deviceId?: str
   throw new Error('Could not generate a unique ledger link. Try again.')
 }
 
+function uniqueLedgersById(entries: Array<{ ledger: Ledger; sortTime: number }>) {
+  const byId = new Map<string, { ledger: Ledger; sortTime: number }>()
+
+  for (const entry of entries) {
+    const existing = byId.get(entry.ledger.id)
+    if (!existing || entry.sortTime > existing.sortTime) {
+      byId.set(entry.ledger.id, entry)
+    }
+  }
+
+  return [...byId.values()].sort((a, b) => b.sortTime - a.sortTime).map((entry) => entry.ledger)
+}
+
+function timestampValue(value: string) {
+  const parsed = Date.parse(value)
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
 export async function fetchLedgersByDeviceId(deviceId: string): Promise<Ledger[]> {
   const client = requireClient()
-  const { data, error } = await client
+  const { data: createdRows, error: createdError } = await client
     .from('ledgers')
     .select('*')
     .eq('created_by_device_id', deviceId)
     .order('created_at', { ascending: false })
 
+  if (createdError) {
+    throw new Error(mapSupabaseErrorMessage(createdError.message))
+  }
+
+  const { data: savedRows, error: savedError } = await client
+    .from('device_ledgers')
+    .select('last_seen_at, ledger:ledgers(*)')
+    .eq('device_id', deviceId)
+    .order('last_seen_at', { ascending: false })
+
+  if (savedError) {
+    throw new Error(mapSupabaseErrorMessage(savedError.message))
+  }
+
+  const createdEntries = (createdRows as LedgerRow[]).map((row) => {
+    const ledger = mapLedger(row)
+    return { ledger, sortTime: timestampValue(ledger.updatedAt) || timestampValue(ledger.createdAt) }
+  })
+
+  const savedEntries = (
+    savedRows as Array<{ last_seen_at: string; ledger: LedgerRow | LedgerRow[] | null }>
+  ).flatMap((row) => {
+    const ledgerRow = Array.isArray(row.ledger) ? row.ledger[0] : row.ledger
+    if (!ledgerRow) {
+      return []
+    }
+
+    return [{ ledger: mapLedger(ledgerRow), sortTime: timestampValue(row.last_seen_at) }]
+  })
+
+  return uniqueLedgersById([...createdEntries, ...savedEntries])
+}
+
+export async function saveDeviceLedger(
+  deviceId: string,
+  ledgerId: string,
+  relationship: DeviceLedgerRelationship,
+): Promise<void> {
+  const client = requireClient()
+  const now = new Date().toISOString()
+  const { error } = await client.from('device_ledgers').upsert(
+    {
+      device_id: deviceId,
+      ledger_id: ledgerId,
+      relationship,
+      last_seen_at: now,
+    },
+    { onConflict: 'device_id,ledger_id' },
+  )
+
   if (error) {
     throw new Error(mapSupabaseErrorMessage(error.message))
   }
-
-  return (data as LedgerRow[]).map(mapLedger)
 }
 
 export async function updateLedgerParticipants(ledgerId: string, participants: ParticipantPair): Promise<Ledger> {

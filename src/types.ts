@@ -91,6 +91,8 @@ export interface AuditEvent {
   createdAt: string
 }
 
+export type DeviceLedgerRelationship = 'created' | 'visited'
+
 export interface ReceiptExtraction {
   rawText: string
   description?: string
